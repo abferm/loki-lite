@@ -42,3 +42,38 @@ func TestReadEntries(t *testing.T) {
 		t.Errorf("expected message %q, got %q", "Test message", entry.Message())
 	}
 }
+
+func TestSeekRealtime(t *testing.T) {
+	r, err := Open("testdata/one_entry.journal")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer r.Close()
+
+	target := time.Unix(1234567890, 0)
+
+	r.SeekRealtime(target)
+	if !r.Next() {
+		t.Fatal("expected entry after SeekRealtime to exact timestamp")
+	}
+	entry := r.Entry()
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+	if !entry.Timestamp.Equal(target) {
+		t.Errorf("expected timestamp %v, got %v", target, entry.Timestamp)
+	}
+
+	r.SeekRealtime(target.Add(time.Microsecond))
+	if r.Next() {
+		t.Fatal("expected no entries after SeekRealtime to 1usec past")
+	}
+
+	r.SeekRealtime(target.Add(-time.Microsecond))
+	if !r.Next() {
+		t.Fatal("expected entry after SeekRealtime to 1usec before")
+	}
+	if !r.Entry().Timestamp.Equal(target) {
+		t.Errorf("wrong timestamp")
+	}
+}

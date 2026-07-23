@@ -32,8 +32,8 @@ type Reader struct {
 	size   uint64
 	closer io.Closer
 	header FileHeader
-	entries []Entry
-	pos    int
+	offset uint64
+	entry  *Entry
 }
 
 type FileHeader struct {
@@ -106,10 +106,7 @@ func Open(path string) (*Reader, error) {
 		return nil, err
 	}
 
-	if err := r.readEntries(); err != nil {
-		f.Close()
-		return nil, err
-	}
+	r.offset = r.header.HeaderSize
 
 	return r, nil
 }
@@ -212,43 +209,6 @@ func (r *Reader) readHeader() error {
 	return nil
 }
 
-func (r *Reader) readEntries() error {
-	r.entries = nil
-	r.pos = 0
-
-	offset := r.header.HeaderSize
-	for offset < r.size {
-		if _, err := r.src.Seek(int64(offset), io.SeekStart); err != nil {
-			return fmt.Errorf("failed to seek to offset %d: %w", offset, err)
-		}
-
-		var obj objectHeader
-		if err := binary.Read(r.src, binary.LittleEndian, &obj); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("failed to read object header at offset %d: %w", offset, err)
-		}
-
-		if obj.Type == objectEntry {
-			entry, err := r.readEntry(offset)
-			if err != nil {
-				return fmt.Errorf("failed to read entry at offset %d: %w", offset, err)
-			}
-			if entry != nil {
-				r.entries = append(r.entries, *entry)
-			}
-		}
-
-		if obj.Size == 0 {
-			break
-		}
-		offset = (offset + obj.Size + 7) & ^uint64(7)
-	}
-
-	return nil
-}
-
 func (r *Reader) readEntry(offset uint64) (*Entry, error) {
 	if _, err := r.src.Seek(int64(offset), io.SeekStart); err != nil {
 		return nil, fmt.Errorf("failed to seek to entry at offset %d: %w", offset, err)
@@ -262,11 +222,11 @@ func (r *Reader) readEntry(offset uint64) (*Entry, error) {
 	var entryObj entryObject
 	entryObj.ObjectHeader = obj
 	var entryFields struct {
-		Seqnum   uint64
-		Realtime uint64
+		Seqnum    uint64
+		Realtime  uint64
 		Monotonic uint64
-		BootID   [16]byte
-		XORHash  uint64
+		BootID    [16]byte
+		XORHash   uint64
 	}
 	if err := binary.Read(r.src, binary.LittleEndian, &entryFields); err != nil {
 		return nil, fmt.Errorf("failed to read entry object at offset %d: %w", offset, err)
@@ -390,38 +350,84 @@ func (r *Reader) TailObjectOffset() uint64 {
 }
 
 func (r *Reader) Next() bool {
-	return r.pos < len(r.entries)
+	for r.offset < r.size {
+		if _, err := r.src.Seek(int64(r.offset), io.SeekStart); err != nil {
+			return false
+		}
+
+		var obj objectHeader
+		if err := binary.Read(r.src, binary.LittleEndian, &obj); err != nil {
+			return false
+		}
+
+		if obj.Size == 0 {
+			return false
+		}
+
+		next := (r.offset + obj.Size + 7) & ^uint64(7)
+
+		if obj.Type == objectEntry {
+			entry, err := r.readEntry(r.offset)
+			if err != nil {
+				return false
+			}
+			r.offset = next
+			r.entry = entry
+			return true
+		}
+
+		r.offset = next
+	}
+	return false
 }
 
 func (r *Reader) Entry() *Entry {
-	if r.pos >= len(r.entries) {
-		return nil
-	}
-	entry := &r.entries[r.pos]
-	r.pos++
-	return entry
+	return r.entry
 }
 
-func (r *Reader) Seek(offset int64, whence int) (int64, error) {
-	newPos := r.pos
-	switch whence {
-	case io.SeekStart:
-		newPos = int(offset)
-	case io.SeekCurrent:
-		newPos = r.pos + int(offset)
-	case io.SeekEnd:
-		newPos = len(r.entries) + int(offset)
-	}
+func (r *Reader) SeekHead() {
+	r.offset = r.header.HeaderSize
+	r.entry = nil
+}
 
-	if newPos < 0 {
-		newPos = 0
-	}
-	if newPos > len(r.entries) {
-		newPos = len(r.entries)
-	}
+func (r *Reader) SeekRealtime(t time.Time) {
+	usec := uint64(t.UnixMicro())
 
-	r.pos = newPos
-	return int64(newPos), nil
+	r.entry = nil
+	r.offset = r.header.HeaderSize
+
+	for r.offset < r.size {
+		if _, err := r.src.Seek(int64(r.offset), io.SeekStart); err != nil {
+			return
+		}
+
+		var obj objectHeader
+		if err := binary.Read(r.src, binary.LittleEndian, &obj); err != nil {
+			return
+		}
+
+		if obj.Size == 0 {
+			return
+		}
+
+		next := (r.offset + obj.Size + 7) & ^uint64(7)
+
+		if obj.Type == objectEntry {
+			if _, err := r.src.Seek(int64(r.offset+24), io.SeekStart); err != nil {
+				return
+			}
+			var realtime uint64
+			if err := binary.Read(r.src, binary.LittleEndian, &realtime); err != nil {
+				return
+			}
+
+			if realtime >= usec {
+				return
+			}
+		}
+
+		r.offset = next
+	}
 }
 
 func (r *Reader) Close() error {
