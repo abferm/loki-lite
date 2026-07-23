@@ -1,0 +1,34 @@
+#!/bin/bash
+set -e
+
+# This script runs every time the container starts. Its job is simple:
+# match the "developer" user's ID numbers inside the container to YOUR
+# ID numbers on your host computer. That way files you create in the
+# container are owned by you on your computer too, not by "root".
+#
+# It runs as the developer user (set by USER in the Dockerfile) and
+# uses sudo for the few commands that need root permissions.
+
+HOST_UID=$(stat -c %u /app 2>/dev/null || echo 1000)
+# Your user ID on your computer (e.g. 1000 is usually the first user).
+# We read it from the /app folder because that folder IS your project
+# folder — Docker just shares (mounts) it into the container.
+
+HOST_GID=$(stat -c %g /app 2>/dev/null || echo 1000)
+# Same idea, but for your main group ID.
+
+if [ "$HOST_UID" != "$(id -u developer)" ] || [ "$HOST_GID" != "$(id -g developer)" ]; then
+    # Only do work if your IDs are different from the container's defaults.
+    # All modifications run in a single sudo session so the privilege check
+    # happens once, before usermod changes /etc/passwd. Inside the root
+    # shell we exec through sudo again to become the new developer user,
+    # since the original process still has the old UID.
+    exec sudo bash -c "
+        groupmod -g $HOST_GID developer
+        usermod -u $HOST_UID -g $HOST_GID developer
+        chown -R $HOST_UID:$HOST_GID /home/developer
+        exec sudo -u developer \"\$@\"
+    " _ "$@"
+fi
+
+exec "$@"

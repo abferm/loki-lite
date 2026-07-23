@@ -1,0 +1,12 @@
+services:
+  dev:
+    build:
+      context: .           # Look for the Dockerfile in this same directory
+      target: dev           # Build the stage named "dev" from the Dockerfile
+    working_dir: /app        # Your project files live at /app inside the container
+    environment:
+      IN_CONTAINER: "true"   # Optional: tells scripts they're inside the container
+    volumes:
+      - .:/app               # Share your project folder with the container
+      - ${HOME}/.gitconfig:/home/developer/.gitconfig:ro  # Your global git config
+    command: sleep infinity   # Keep the container running so you can exec into it

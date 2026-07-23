@@ -1,0 +1,18 @@
+{
+    // Path to the Docker Compose file (relative to this .devcontainer folder)
+    "dockerComposeFile": "../docker-compose.yml",
+    // Which service from docker-compose.yml to connect to
+    "service": "dev",
+    // Where VS Code should open inside the container
+    "workspaceFolder": "/app",
+    // Connect as "developer" (the with-host-ids script already fixed its UID)
+    "remoteUser": "developer",
+    // VS Code extensions to install automatically
+    "extensions": [
+        "golang.go",                         // Go language support
+        "ms-azuretools.vscode-docker",        // Docker integration
+    ],
+    "settings": {
+        "go.useLanguageServer": true,          // Enable the Go language server
+    }
+}

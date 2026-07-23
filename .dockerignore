@@ -1,0 +1,8 @@
+# Exclude only what no build stage could ever need
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+README.md
+.devcontainer
