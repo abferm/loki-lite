@@ -99,15 +99,15 @@ type dataDef struct {
 func writeMultiFile(dir string) {
 	entries1 := []entryDef{
 		{seqnum: 1, realtime: 1000000, fields: map[string]string{"MESSAGE": "Entry 1", "SYSLOG_IDENTIFIER": "svc1"}},
-		{seqnum: 3, realtime: 3000000, fields: map[string]string{"MESSAGE": "Entry 3", "SYSLOG_IDENTIFIER": "svc1"}},
+		{seqnum: 2, realtime: 2000000, fields: map[string]string{"MESSAGE": "Entry 2", "SYSLOG_IDENTIFIER": "svc1"}},
 	}
 	entries2 := []entryDef{
-		{seqnum: 2, realtime: 2000000, fields: map[string]string{"MESSAGE": "Entry 2", "SYSLOG_IDENTIFIER": "svc2"}},
+		{seqnum: 3, realtime: 3000000, fields: map[string]string{"MESSAGE": "Entry 3", "SYSLOG_IDENTIFIER": "svc2"}},
 		{seqnum: 4, realtime: 4000000, fields: map[string]string{"MESSAGE": "Entry 4", "SYSLOG_IDENTIFIER": "svc2"}},
 	}
 
-	writeJournalFile(filepath.Join(dir, "system.journal"), entries1, 1, 3)
-	writeJournalFile(filepath.Join(dir, "system@0000000000000002-0000000000000001.journal"), entries2, 2, 4)
+	writeJournalFile(filepath.Join(dir, "system.journal"), entries1, 1, 2)
+	writeJournalFile(filepath.Join(dir, "system@0000000000000002-0000000000000001.journal"), entries2, 3, 4)
 }
 
 func writeJournalFile(path string, entries []entryDef, headSeqnum, tailSeqnum uint64) {
@@ -197,8 +197,8 @@ func writeJournalFile(path string, entries []entryDef, headSeqnum, tailSeqnum ui
 	}
 
 	// Fix up header fields
-	headEntry := entries[len(entries)-1]
-	tailEntry := entries[0]
+	headEntry := entries[0]
+	tailEntry := entries[len(entries)-1]
 	lastEntryOff := entryInfos[len(entryInfos)-1].offset
 
 	// Set header fields (file offsets, not remaining offsets)

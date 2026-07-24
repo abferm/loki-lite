@@ -70,6 +70,12 @@ func TestJournalSeekRealtime(t *testing.T) {
 	j.SeekRealtime(target)
 
 	count := 0
+	if entry := j.Entry(); entry != nil {
+		if entry.Timestamp.Before(target) {
+			t.Errorf("entry %v is before target %v", entry.Timestamp, target)
+		}
+		count++
+	}
 	for j.Next() {
 		entry := j.Entry()
 		if entry == nil {
