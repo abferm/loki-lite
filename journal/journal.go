@@ -108,6 +108,31 @@ func OpenJournal(dir, name string) (*Journal, error) {
 	}, nil
 }
 
+// refresh reloads the active file's header and handles rotation. Returns true
+// if new entries may be available (tail seqnum advanced or file rotated).
+func (j *Journal) refresh() bool {
+	activeFile := j.files[j.activeIdx]
+	if err := activeFile.ReloadHeader(); err != nil {
+		return false
+	}
+
+	if activeFile.State() == stateArchived {
+		j.cleanupDeletedFiles()
+		j.openNewActiveFile()
+		if len(j.files) > 0 {
+			j.tailSeqnum = j.files[j.activeIdx].TailEntrySeqnum()
+		}
+		return true
+	}
+
+	if activeFile.TailEntrySeqnum() > j.tailSeqnum {
+		j.tailSeqnum = activeFile.TailEntrySeqnum()
+		return true
+	}
+
+	return false
+}
+
 // SeekRealtime positions the journal at the first entry whose timestamp is >= t.
 // Files entirely before t are skipped. The best file (smallest HeadEntryRealtime
 // that covers t) is SeekRealtime'd and its first entry is read into Entry().
@@ -172,9 +197,10 @@ func (j *Journal) NextEntry() (e *Entry, ok bool) {
 // false when no more entries are available.
 func (j *Journal) Next() bool {
 	if len(j.files) == 0 {
-		return false
+		panic("Next on empty journal")
 	}
 
+	// First call: start from the file with the oldest entry.
 	if j.entry == nil {
 		var first *Reader
 		for _, r := range j.files {
@@ -194,6 +220,7 @@ func (j *Journal) Next() bool {
 		currentSeqnum := j.entry.Seqnum()
 		nextSeqnum := currentSeqnum + 1
 
+		// Locate which file holds the current seqnum and which holds the next.
 		var currentFile, nextFile *Reader
 		for _, r := range j.files {
 			if r.containsSeqnum(currentSeqnum) {
@@ -204,6 +231,7 @@ func (j *Journal) Next() bool {
 			}
 		}
 
+		// Same file contains both — advance within it.
 		if currentFile != nil && nextFile != nil && currentFile == nextFile {
 			if entry, ok := currentFile.NextEntry(); ok {
 				j.entry = entry
@@ -214,6 +242,8 @@ func (j *Journal) Next() bool {
 
 		activeFile := j.files[j.activeIdx]
 
+		// Gap: next seqnum not in any file. Find the file with the smallest
+		// HeadEntrySeqnum greater than current — skips over the gap.
 		if nextFile == nil && nextSeqnum < activeFile.HeadEntrySeqnum() {
 			for _, r := range j.files {
 				if r.HeadEntrySeqnum() > currentSeqnum {
@@ -224,6 +254,7 @@ func (j *Journal) Next() bool {
 			}
 		}
 
+		// Cross file boundary: seek to head of next file and read.
 		if nextFile != nil {
 			nextFile.SeekHead()
 			if entry, ok := nextFile.NextEntry(); ok {
@@ -233,25 +264,11 @@ func (j *Journal) Next() bool {
 			return false
 		}
 
-		if err := activeFile.ReloadHeader(); err != nil {
+		// Caught up to tail. Reload active header to detect rotation or new
+		// entries. If nothing new, we're done.
+		if !j.refresh() {
 			return false
 		}
-
-		if activeFile.State() == stateArchived {
-			j.cleanupDeletedFiles()
-			j.openNewActiveFile()
-			if len(j.files) > 0 {
-				j.tailSeqnum = j.files[j.activeIdx].TailEntrySeqnum()
-			}
-			continue
-		}
-
-		if activeFile.TailEntrySeqnum() > j.tailSeqnum {
-			j.tailSeqnum = activeFile.TailEntrySeqnum()
-			continue
-		}
-
-		return false
 	}
 }
 
