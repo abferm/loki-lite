@@ -474,47 +474,40 @@ func (r *Reader) SeekHead() {
 	r.entry = nil
 }
 
+// Seek positions the reader at the entry with the given seqnum and reads it
+// into Entry(). If seqnum < HeadEntrySeqnum, loads the first entry (may be
+// after the target). If seqnum >= TailEntrySeqnum, loads the last entry.
+// Returns true if the loaded entry's seqnum is >= seqnum.
+func (r *Reader) Seek(seqnum uint64) bool {
+	r.SeekHead()
+	for r.Next() {
+		if r.entry.Seqnum() >= seqnum {
+			return true
+		}
+	}
+	return false
+}
+
+// SeekTail positions the reader at the last entry in the file and reads it
+// into Entry(). Equivalent to Seek(tailSeqnum).
+func (r *Reader) SeekTail() {
+	r.Seek(r.header.TailEntrySeqnum)
+}
+
 // SeekRealtime positions the reader at the first entry whose realtime timestamp
-// is >= t. After calling SeekRealtime, use NextEntry() to read entries. If no
-// entry in the file meets the target, the reader is positioned at EOF.
-func (r *Reader) SeekRealtime(t time.Time) {
+// is >= t and reads it into Entry(). If t is before the head realtime, loads
+// the first entry (may be after t). If t is after the tail realtime, loads the
+// last entry. Returns true if the loaded entry's timestamp is >= t.
+func (r *Reader) SeekRealtime(t time.Time) bool {
 	usec := uint64(t.UnixMicro())
 
-	r.entry = nil
-	r.offset = r.header.HeaderSize
-
-	for r.offset < r.size {
-		if _, err := r.src.Seek(int64(r.offset), io.SeekStart); err != nil {
-			return
+	r.SeekHead()
+	for r.Next() {
+		if r.entry.Realtime() >= usec {
+			return true
 		}
-
-		var obj objectHeader
-		if err := binary.Read(r.src, binary.LittleEndian, &obj); err != nil {
-			return
-		}
-
-		if obj.Size == 0 {
-			return
-		}
-
-		next := (r.offset + obj.Size + 7) & ^uint64(7)
-
-		if obj.Type == objectEntry {
-			if _, err := r.src.Seek(int64(r.offset+24), io.SeekStart); err != nil {
-				return
-			}
-			var realtime uint64
-			if err := binary.Read(r.src, binary.LittleEndian, &realtime); err != nil {
-				return
-			}
-
-			if realtime >= usec {
-				return
-			}
-		}
-
-		r.offset = next
 	}
+	return false
 }
 
 func (r *Reader) containsSeqnum(seqnum uint64) bool {

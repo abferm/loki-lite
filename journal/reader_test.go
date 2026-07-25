@@ -53,27 +53,34 @@ func TestSeekRealtime(t *testing.T) {
 	target := time.Unix(1234567890, 0)
 
 	r.SeekRealtime(target)
-	if !r.Next() {
-		t.Fatal("expected entry after SeekRealtime to exact timestamp")
-	}
 	entry := r.Entry()
 	if entry == nil {
-		t.Fatal("expected non-nil entry")
+		t.Fatal("expected entry after SeekRealtime to exact timestamp")
 	}
 	if !entry.Timestamp.Equal(target) {
 		t.Errorf("expected timestamp %v, got %v", target, entry.Timestamp)
 	}
 
-	r.SeekRealtime(target.Add(time.Microsecond))
+	// Next() should advance past the seeked entry.
 	if r.Next() {
-		t.Fatal("expected no entries after SeekRealtime to 1usec past")
+		t.Fatal("expected no more entries after SeekRealtime to exact timestamp")
+	}
+
+	r.SeekRealtime(target.Add(time.Microsecond))
+	entry = r.Entry()
+	if entry == nil {
+		t.Fatal("expected non-nil Entry() after SeekRealtime to 1usec past (latches at last entry)")
+	}
+	if !entry.Timestamp.Before(target.Add(time.Microsecond)) {
+		t.Fatal("expected entry before the target time")
 	}
 
 	r.SeekRealtime(target.Add(-time.Microsecond))
-	if !r.Next() {
+	entry = r.Entry()
+	if entry == nil {
 		t.Fatal("expected entry after SeekRealtime to 1usec before")
 	}
-	if !r.Entry().Timestamp.Equal(target) {
+	if !entry.Timestamp.Equal(target) {
 		t.Errorf("wrong timestamp")
 	}
 }

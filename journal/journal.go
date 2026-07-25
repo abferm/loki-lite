@@ -136,12 +136,25 @@ func (j *Journal) refresh() bool {
 // SeekRealtime positions the journal at the first entry whose timestamp is >= t.
 // Files entirely before t are skipped. The best file (smallest HeadEntryRealtime
 // that covers t) is SeekRealtime'd and its first entry is read into Entry().
+// Returns true if the resulting Entry()'s timestamp is >= t.
 // Call Next() after SeekRealtime to continue iteration.
 func (j *Journal) SeekRealtime(t time.Time) {
 	usec := uint64(t.UnixMicro())
 
+	if len(j.files) == 0 {
+		panic("SeekRealtime on empty journal")
+	}
+
+	// Refresh if target is beyond active file's tail — picks up new entries
+	// and detects rotation before we search.
+	if usec > j.files[j.activeIdx].TailEntryRealtime() {
+		j.refresh()
+	}
+
 	j.entry = nil
 
+	// Find the best file: the one with the smallest HeadEntryRealtime that
+	// still covers the target. Skip files whose tail is entirely before t.
 	var bestFile *Reader
 	for _, r := range j.files {
 		if r.TailEntryRealtime() < usec {
@@ -154,18 +167,16 @@ func (j *Journal) SeekRealtime(t time.Time) {
 		}
 	}
 
+	// Seek within the best file. SeekRealtime reads the first entry >= t.
 	if bestFile != nil {
 		bestFile.SeekRealtime(t)
-		if e, ok := bestFile.NextEntry(); ok {
-			j.entry = e
-		}
+		j.entry = bestFile.Entry()
 	}
 
-	for _, r := range j.files {
-		if r != bestFile {
-			r.offset = r.size
-			r.entry = nil
-		}
+	// Nothing >= t found. Latch at the last entry by seqnum so the journal
+	// keeps its place and Next() returns false.
+	if j.entry == nil {
+		j.SeekTail()
 	}
 }
 
@@ -176,6 +187,35 @@ func (j *Journal) SeekHead() {
 		r.SeekHead()
 	}
 	j.entry = nil
+}
+
+// Seek positions the journal at the entry with the given seqnum and reads it
+// into Entry(). Refreshes if seqnum is beyond the tail. Returns true if the
+// resulting Entry()'s seqnum is >= seqnum.
+func (j *Journal) Seek(seqnum uint64) bool {
+	j.entry = nil
+
+	if seqnum > j.tailSeqnum {
+		j.refresh()
+	}
+
+	for _, r := range j.files {
+		if r.Seek(seqnum) {
+			j.entry = r.Entry()
+			return true
+		}
+	}
+	return false
+}
+
+// SeekTail positions the journal at the last entry (by seqnum) and reads it
+// into Entry(). Assumes the active file is the tail file. The next Next()
+// call returns false.
+func (j *Journal) SeekTail() {
+	j.entry = nil
+	active := j.files[j.activeIdx]
+	active.SeekTail()
+	j.entry = active.Entry()
 }
 
 // NextEntry is a convenience wrapper: calls Next() then returns (Entry(), true)
