@@ -24,7 +24,7 @@ type Entry struct {
 
 // Seqnum returns the entry's monotonic sequence number. Seqnums are unique within
 // a journal file and increase with each entry. Use for cursor-based iteration —
-// a Reader's containsSeqnum checks whether a seqnum falls within a file's range.
+// a File's containsSeqnum checks whether a seqnum falls within a file's range.
 func (e *Entry) Seqnum() uint64 {
 	return e.obj.Seqnum
 }

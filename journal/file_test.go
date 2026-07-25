@@ -6,29 +6,29 @@ import (
 )
 
 func TestReadHeader(t *testing.T) {
-	r, err := Open("testdata/minimal.journal")
+	f, err := Open("testdata/minimal.journal")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer r.Close()
+	defer f.Close()
 
-	if string(r.header.Signature[:]) != journalMagic {
-		t.Errorf("expected signature %q, got %q", journalMagic, string(r.header.Signature[:]))
+	if string(f.header.Signature[:]) != journalMagic {
+		t.Errorf("expected signature %q, got %q", journalMagic, string(f.header.Signature[:]))
 	}
 }
 
 func TestReadEntries(t *testing.T) {
-	r, err := Open("testdata/one_entry.journal")
+	f, err := Open("testdata/one_entry.journal")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer r.Close()
+	defer f.Close()
 
-	if !r.Next() {
+	if !f.Next() {
 		t.Fatal("expected at least one entry")
 	}
 
-	entry := r.Entry()
+	entry := f.Entry()
 	if entry == nil {
 		t.Fatal("expected non-nil entry")
 	}
@@ -44,16 +44,16 @@ func TestReadEntries(t *testing.T) {
 }
 
 func TestSeekRealtime(t *testing.T) {
-	r, err := Open("testdata/one_entry.journal")
+	f, err := Open("testdata/one_entry.journal")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer r.Close()
+	defer f.Close()
 
 	target := time.Unix(1234567890, 0)
 
-	r.SeekRealtime(target)
-	entry := r.Entry()
+	f.SeekRealtime(target)
+	entry := f.Entry()
 	if entry == nil {
 		t.Fatal("expected entry after SeekRealtime to exact timestamp")
 	}
@@ -62,12 +62,12 @@ func TestSeekRealtime(t *testing.T) {
 	}
 
 	// Next() should advance past the seeked entry.
-	if r.Next() {
+	if f.Next() {
 		t.Fatal("expected no more entries after SeekRealtime to exact timestamp")
 	}
 
-	r.SeekRealtime(target.Add(time.Microsecond))
-	entry = r.Entry()
+	f.SeekRealtime(target.Add(time.Microsecond))
+	entry = f.Entry()
 	if entry == nil {
 		t.Fatal("expected non-nil Entry() after SeekRealtime to 1usec past (latches at last entry)")
 	}
@@ -75,8 +75,8 @@ func TestSeekRealtime(t *testing.T) {
 		t.Fatal("expected entry before the target time")
 	}
 
-	r.SeekRealtime(target.Add(-time.Microsecond))
-	entry = r.Entry()
+	f.SeekRealtime(target.Add(-time.Microsecond))
+	entry = f.Entry()
 	if entry == nil {
 		t.Fatal("expected entry after SeekRealtime to 1usec before")
 	}

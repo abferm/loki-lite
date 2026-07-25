@@ -18,7 +18,7 @@ import (
 type Journal struct {
 	dir        string
 	name       string
-	files      []*Reader
+	files      []*File
 	entry      *Entry
 	activeIdx  int
 	tailSeqnum uint64
@@ -28,7 +28,7 @@ type Journal struct {
 // name.journal (active) and name@*.journal (archived), sorted by HeadEntrySeqnum.
 // Returns error if no matching files exist or any file fails to open.
 func OpenJournal(dir, name string) (*Journal, error) {
-	var files []string
+	var filePaths []string
 
 	pattern := filepath.Join(dir, name+"*.journal")
 	matches, err := filepath.Glob(pattern)
@@ -39,11 +39,11 @@ func OpenJournal(dir, name string) (*Journal, error) {
 	for _, path := range matches {
 		base := filepath.Base(path)
 		if base == name+".journal" || strings.HasPrefix(base, name+"@") {
-			files = append(files, path)
+			filePaths = append(filePaths, path)
 		}
 	}
 
-	if len(files) == 0 {
+	if len(filePaths) == 0 {
 		return nil, fmt.Errorf("no journal files found for %q in %s", name, dir)
 	}
 
@@ -54,55 +54,55 @@ func OpenJournal(dir, name string) (*Journal, error) {
 	}
 
 	var infos []fileInfo
-	for _, path := range files {
-		r, err := Open(path)
+	for _, path := range filePaths {
+		f, err := Open(path)
 		if err != nil {
-			for _, f := range infos {
-				r, err := Open(f.path)
+			for _, fi := range infos {
+				f, err := Open(fi.path)
 				if err == nil {
-					r.Close()
+					f.Close()
 				}
 			}
 			return nil, fmt.Errorf("failed to open %s: %w", path, err)
 		}
 		infos = append(infos, fileInfo{
 			path:         path,
-			headSeqnum:   r.HeadEntrySeqnum(),
-			tailRealtime: r.TailEntryRealtime(),
+			headSeqnum:   f.HeadEntrySeqnum(),
+			tailRealtime: f.TailEntryRealtime(),
 		})
-		r.Close()
+		f.Close()
 	}
 
 	sort.Slice(infos, func(i, j int) bool {
 		return infos[i].headSeqnum < infos[j].headSeqnum
 	})
 
-	var readers []*Reader
+	var files []*File
 	for _, info := range infos {
 		r, err := Open(info.path)
 		if err != nil {
-			for _, reader := range readers {
-				reader.Close()
+			for _, f := range files {
+				f.Close()
 			}
 			return nil, fmt.Errorf("failed to open %s: %w", info.path, err)
 		}
-		readers = append(readers, r)
+		files = append(files, r)
 	}
 
 	var activeIdx int
-	if len(readers) > 0 {
-		activeIdx = len(readers) - 1
+	if len(files) > 0 {
+		activeIdx = len(files) - 1
 	}
 
 	var tailSeqnum uint64
-	if len(readers) > 0 {
-		tailSeqnum = readers[activeIdx].TailEntrySeqnum()
+	if len(files) > 0 {
+		tailSeqnum = files[activeIdx].TailEntrySeqnum()
 	}
 
 	return &Journal{
 		dir:        dir,
 		name:       name,
-		files:      readers,
+		files:      files,
 		activeIdx:  activeIdx,
 		tailSeqnum: tailSeqnum,
 	}, nil
@@ -155,14 +155,14 @@ func (j *Journal) SeekRealtime(t time.Time) {
 
 	// Find the best file: the one with the smallest HeadEntryRealtime that
 	// still covers the target. Skip files whose tail is entirely before t.
-	var bestFile *Reader
-	for _, r := range j.files {
-		if r.TailEntryRealtime() < usec {
-			r.offset = r.size
-			r.entry = nil
+	var bestFile *File
+	for _, f := range j.files {
+		if f.TailEntryRealtime() < usec {
+			f.offset = f.size
+			f.entry = nil
 		} else {
-			if bestFile == nil || r.HeadEntryRealtime() < bestFile.HeadEntryRealtime() {
-				bestFile = r
+			if bestFile == nil || f.HeadEntryRealtime() < bestFile.HeadEntryRealtime() {
+				bestFile = f
 			}
 		}
 	}
@@ -183,8 +183,8 @@ func (j *Journal) SeekRealtime(t time.Time) {
 // SeekHead resets all files to their first entry and clears the current Entry.
 // The next Next() call reads from the oldest entry across all files.
 func (j *Journal) SeekHead() {
-	for _, r := range j.files {
-		r.SeekHead()
+	for _, f := range j.files {
+		f.SeekHead()
 	}
 	j.entry = nil
 }
@@ -199,9 +199,9 @@ func (j *Journal) Seek(seqnum uint64) bool {
 		j.refresh()
 	}
 
-	for _, r := range j.files {
-		if r.Seek(seqnum) {
-			j.entry = r.Entry()
+	for _, f := range j.files {
+		if f.Seek(seqnum) {
+			j.entry = f.Entry()
 			return true
 		}
 	}
@@ -242,10 +242,10 @@ func (j *Journal) Next() bool {
 
 	// First call: start from the file with the oldest entry.
 	if j.entry == nil {
-		var first *Reader
-		for _, r := range j.files {
-			if first == nil || r.HeadEntrySeqnum() < first.HeadEntrySeqnum() {
-				first = r
+		var first *File
+		for _, f := range j.files {
+			if first == nil || f.HeadEntrySeqnum() < first.HeadEntrySeqnum() {
+				first = f
 			}
 		}
 		first.SeekHead()
@@ -261,13 +261,13 @@ func (j *Journal) Next() bool {
 		nextSeqnum := currentSeqnum + 1
 
 		// Locate which file holds the current seqnum and which holds the next.
-		var currentFile, nextFile *Reader
-		for _, r := range j.files {
-			if r.containsSeqnum(currentSeqnum) {
-				currentFile = r
+		var currentFile, nextFile *File
+		for _, f := range j.files {
+			if f.containsSeqnum(currentSeqnum) {
+				currentFile = f
 			}
-			if r.containsSeqnum(nextSeqnum) {
-				nextFile = r
+			if f.containsSeqnum(nextSeqnum) {
+				nextFile = f
 			}
 		}
 
@@ -285,10 +285,10 @@ func (j *Journal) Next() bool {
 		// Gap: next seqnum not in any file. Find the file with the smallest
 		// HeadEntrySeqnum greater than current — skips over the gap.
 		if nextFile == nil && nextSeqnum < activeFile.HeadEntrySeqnum() {
-			for _, r := range j.files {
-				if r.HeadEntrySeqnum() > currentSeqnum {
-					if nextFile == nil || r.HeadEntrySeqnum() < nextFile.HeadEntrySeqnum() {
-						nextFile = r
+			for _, f := range j.files {
+				if f.HeadEntrySeqnum() > currentSeqnum {
+					if nextFile == nil || f.HeadEntrySeqnum() < nextFile.HeadEntrySeqnum() {
+						nextFile = f
 					}
 				}
 			}
@@ -342,11 +342,11 @@ func (j *Journal) Entry() *Entry {
 	return j.entry
 }
 
-// Close closes all underlying Readers. Returns the first error encountered;
+// Close closes all underlying Files. Returns the first error encountered;
 // remaining files are still closed.
 func (j *Journal) Close() error {
-	for _, r := range j.files {
-		if err := r.Close(); err != nil {
+	for _, f := range j.files {
+		if err := f.Close(); err != nil {
 			return err
 		}
 	}
@@ -389,6 +389,6 @@ func (j *Journal) NFiles() int {
 
 // Files returns the open Readers sorted by HeadEntrySeqnum (index 0 = oldest).
 // Useful for diagnostics (e.g. printing seqnum ranges with cmd/inspect).
-func (j *Journal) Files() []*Reader {
+func (j *Journal) Files() []*File {
 	return j.files
 }

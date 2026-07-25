@@ -12,19 +12,19 @@ func TestReadRealJournal(t *testing.T) {
 		t.Skip("skipping: JOURNAL_PATH not set")
 	}
 
-	r, err := Open(journalPath)
+	f, err := Open(journalPath)
 	if err != nil {
 		t.Fatalf("failed to open journal: %v", err)
 	}
-	defer r.Close()
+	defer f.Close()
 
-	fmt.Printf("Header magic: %s\n", r.Signature())
-	fmt.Printf("Header size: %d\n", r.HeaderSize())
-	fmt.Printf("N entries: %d\n", r.NEntries())
+	fmt.Printf("Header magic: %s\n", f.Signature())
+	fmt.Printf("Header size: %d\n", f.HeaderSize())
+	fmt.Printf("N entries: %d\n", f.NEntries())
 
 	count := 0
-	for r.Next() {
-		entry := r.Entry()
+	for f.Next() {
+		entry := f.Entry()
 		if entry == nil {
 			break
 		}

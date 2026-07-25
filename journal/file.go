@@ -29,12 +29,12 @@ const (
 	compactFlag = 1 << 4
 )
 
-// Reader reads a single journald journal file. It holds one entry at a time in
+// File reads a single journald journal file. It holds one entry at a time in
 // memory (streaming iteration, not eager load). For multi-file journals, use
-// Journal instead — Reader is strictly single-file.
+// Journal instead — File is strictly single-file.
 //
-// Reader is not safe for concurrent use. Each goroutine should open its own.
-type Reader struct {
+// File is not safe for concurrent use. Each goroutine should open its own.
+type File struct {
 	src    io.ReadSeeker
 	size   uint64
 	closer io.Closer
@@ -101,97 +101,97 @@ type entryObject struct {
 }
 
 // Open opens a journald journal file for reading. Returns error if the file
-// doesn't exist, isn't a valid journal file, or can't be read. The Reader
+// doesn't exist, isn't a valid journal file, or can't be read. The File
 // starts positioned at the first entry (after the header).
-func Open(path string) (*Reader, error) {
-	f, err := os.Open(path)
+func Open(path string) (*File, error) {
+	src, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open journal file: %w", err)
 	}
 
-	info, err := f.Stat()
+	info, err := src.Stat()
 	if err != nil {
-		f.Close()
+		src.Close()
 		return nil, fmt.Errorf("failed to stat journal file: %w", err)
 	}
 
-	r := &Reader{src: f, size: uint64(info.Size()), closer: f}
-	if err := r.readHeader(); err != nil {
-		f.Close()
+	f := &File{src: src, size: uint64(info.Size()), closer: src}
+	if err := f.readHeader(); err != nil {
+		src.Close()
 		return nil, err
 	}
 
-	r.offset = r.header.HeaderSize
+	f.offset = f.header.HeaderSize
 
-	return r, nil
+	return f, nil
 }
 
-func (r *Reader) readHeader() error {
-	if _, err := io.ReadFull(r.src, r.header.Signature[:]); err != nil {
+func (f *File) readHeader() error {
+	if _, err := io.ReadFull(f.src, f.header.Signature[:]); err != nil {
 		return fmt.Errorf("failed to read signature: %w", err)
 	}
 
-	if string(r.header.Signature[:]) != journalMagic {
-		return fmt.Errorf("invalid journal magic: %q", string(r.header.Signature[:]))
+	if string(f.header.Signature[:]) != journalMagic {
+		return fmt.Errorf("invalid journal magic: %q", string(f.header.Signature[:]))
 	}
 
 	var remaining [headerSize - 8]byte
-	if _, err := io.ReadFull(r.src, remaining[:]); err != nil {
+	if _, err := io.ReadFull(f.src, remaining[:]); err != nil {
 		return fmt.Errorf("failed to read header: %w", err)
 	}
 
-	r.header.CompatibleFlags = binary.LittleEndian.Uint32(remaining[0:4])
-	r.header.IncompatibleFlags = binary.LittleEndian.Uint32(remaining[4:8])
-	r.header.State = remaining[8]
-	copy(r.header.Reserved[:], remaining[9:16])
-	copy(r.header.FileID[:], remaining[16:32])
-	copy(r.header.MachineID[:], remaining[32:48])
-	copy(r.header.TailEntryBootID[:], remaining[48:64])
-	copy(r.header.SeqnumID[:], remaining[64:80])
-	r.header.HeaderSize = binary.LittleEndian.Uint64(remaining[80:88])
-	r.header.ArenaSize = binary.LittleEndian.Uint64(remaining[88:96])
-	r.header.DataTableOffset = binary.LittleEndian.Uint64(remaining[96:104])
-	r.header.DataTableSize = binary.LittleEndian.Uint64(remaining[104:112])
-	r.header.FieldTableOffset = binary.LittleEndian.Uint64(remaining[112:120])
-	r.header.FieldTableSize = binary.LittleEndian.Uint64(remaining[120:128])
-	r.header.TailObjectOffset = binary.LittleEndian.Uint64(remaining[128:136])
-	r.header.NObjects = binary.LittleEndian.Uint64(remaining[136:144])
-	r.header.NEntries = binary.LittleEndian.Uint64(remaining[144:152])
-	r.header.TailEntrySeqnum = binary.LittleEndian.Uint64(remaining[152:160])
-	r.header.HeadEntrySeqnum = binary.LittleEndian.Uint64(remaining[160:168])
-	r.header.EntryArrayOffset = binary.LittleEndian.Uint64(remaining[168:176])
-	r.header.HeadEntryRealtime = binary.LittleEndian.Uint64(remaining[176:184])
-	r.header.TailEntryRealtime = binary.LittleEndian.Uint64(remaining[184:192])
-	r.header.TailEntryMonotonic = binary.LittleEndian.Uint64(remaining[192:200])
+	f.header.CompatibleFlags = binary.LittleEndian.Uint32(remaining[0:4])
+	f.header.IncompatibleFlags = binary.LittleEndian.Uint32(remaining[4:8])
+	f.header.State = remaining[8]
+	copy(f.header.Reserved[:], remaining[9:16])
+	copy(f.header.FileID[:], remaining[16:32])
+	copy(f.header.MachineID[:], remaining[32:48])
+	copy(f.header.TailEntryBootID[:], remaining[48:64])
+	copy(f.header.SeqnumID[:], remaining[64:80])
+	f.header.HeaderSize = binary.LittleEndian.Uint64(remaining[80:88])
+	f.header.ArenaSize = binary.LittleEndian.Uint64(remaining[88:96])
+	f.header.DataTableOffset = binary.LittleEndian.Uint64(remaining[96:104])
+	f.header.DataTableSize = binary.LittleEndian.Uint64(remaining[104:112])
+	f.header.FieldTableOffset = binary.LittleEndian.Uint64(remaining[112:120])
+	f.header.FieldTableSize = binary.LittleEndian.Uint64(remaining[120:128])
+	f.header.TailObjectOffset = binary.LittleEndian.Uint64(remaining[128:136])
+	f.header.NObjects = binary.LittleEndian.Uint64(remaining[136:144])
+	f.header.NEntries = binary.LittleEndian.Uint64(remaining[144:152])
+	f.header.TailEntrySeqnum = binary.LittleEndian.Uint64(remaining[152:160])
+	f.header.HeadEntrySeqnum = binary.LittleEndian.Uint64(remaining[160:168])
+	f.header.EntryArrayOffset = binary.LittleEndian.Uint64(remaining[168:176])
+	f.header.HeadEntryRealtime = binary.LittleEndian.Uint64(remaining[176:184])
+	f.header.TailEntryRealtime = binary.LittleEndian.Uint64(remaining[184:192])
+	f.header.TailEntryMonotonic = binary.LittleEndian.Uint64(remaining[192:200])
 
-	if r.header.HeaderSize > 200 {
-		r.header.NData = binary.LittleEndian.Uint64(remaining[200:208])
-		r.header.NFields = binary.LittleEndian.Uint64(remaining[208:216])
+	if f.header.HeaderSize > 200 {
+		f.header.NData = binary.LittleEndian.Uint64(remaining[200:208])
+		f.header.NFields = binary.LittleEndian.Uint64(remaining[208:216])
 	}
-	if r.header.HeaderSize > 216 {
-		r.header.NTags = binary.LittleEndian.Uint64(remaining[216:224])
-		r.header.NEntryArrays = binary.LittleEndian.Uint64(remaining[224:232])
+	if f.header.HeaderSize > 216 {
+		f.header.NTags = binary.LittleEndian.Uint64(remaining[216:224])
+		f.header.NEntryArrays = binary.LittleEndian.Uint64(remaining[224:232])
 	}
 
-	if r.header.HeaderSize > 232 {
+	if f.header.HeaderSize > 232 {
 		var extra [32]byte
-		n, err := io.ReadFull(r.src, extra[:])
+		n, err := io.ReadFull(f.src, extra[:])
 		if err != nil && n == 0 {
 			return fmt.Errorf("failed to read extended header: %w", err)
 		}
 
 		if n >= 8 {
-			r.header.DataHashChainDepth = binary.LittleEndian.Uint64(extra[0:8])
+			f.header.DataHashChainDepth = binary.LittleEndian.Uint64(extra[0:8])
 		}
 		if n >= 16 {
-			r.header.FieldHashChainDepth = binary.LittleEndian.Uint64(extra[8:16])
+			f.header.FieldHashChainDepth = binary.LittleEndian.Uint64(extra[8:16])
 		}
 		if n >= 24 {
-			r.header.TailEntryArrayOffset = binary.LittleEndian.Uint32(extra[16:20])
-			r.header.TailEntryArrayNEnts = binary.LittleEndian.Uint32(extra[20:24])
+			f.header.TailEntryArrayOffset = binary.LittleEndian.Uint32(extra[16:20])
+			f.header.TailEntryArrayNEnts = binary.LittleEndian.Uint32(extra[20:24])
 		}
 		if n >= 32 {
-			r.header.TailEntryOffset = binary.LittleEndian.Uint64(extra[24:32])
+			f.header.TailEntryOffset = binary.LittleEndian.Uint64(extra[24:32])
 		}
 	}
 
@@ -202,33 +202,33 @@ func (r *Reader) readHeader() error {
 // Use after the active journal file may have grown or been rotated to an archived
 // state. Calls readHeader internally, so header fields (HeadEntrySeqnum,
 // TailEntrySeqnum, State, etc.) are refreshed on success.
-func (r *Reader) ReloadHeader() error {
-	if f, ok := r.src.(*os.File); ok {
-		if info, err := f.Stat(); err == nil {
-			r.size = uint64(info.Size())
+func (f *File) ReloadHeader() error {
+	if osf, ok := f.src.(*os.File); ok {
+		if info, err := osf.Stat(); err == nil {
+			f.size = uint64(info.Size())
 		}
 	}
 
-	if _, err := r.src.Seek(0, io.SeekStart); err != nil {
+	if _, err := f.src.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("failed to seek to header: %w", err)
 	}
 
-	return r.readHeader()
+	return f.readHeader()
 }
 
 // State returns the file's lifecycle state from its header: 0=offline,
 // 1=online (active, receiving new entries), 2=archived (rotated, no new entries).
-func (r *Reader) State() uint8 {
-	return r.header.State
+func (f *File) State() uint8 {
+	return f.header.State
 }
 
-func (r *Reader) readEntry(offset uint64) (*Entry, error) {
-	if _, err := r.src.Seek(int64(offset), io.SeekStart); err != nil {
+func (f *File) readEntry(offset uint64) (*Entry, error) {
+	if _, err := f.src.Seek(int64(offset), io.SeekStart); err != nil {
 		return nil, fmt.Errorf("failed to seek to entry at offset %d: %w", offset, err)
 	}
 
 	var obj objectHeader
-	if err := binary.Read(r.src, binary.LittleEndian, &obj); err != nil {
+	if err := binary.Read(f.src, binary.LittleEndian, &obj); err != nil {
 		return nil, fmt.Errorf("failed to read entry object header at offset %d: %w", offset, err)
 	}
 
@@ -241,7 +241,7 @@ func (r *Reader) readEntry(offset uint64) (*Entry, error) {
 		BootID    [16]byte
 		XORHash   uint64
 	}
-	if err := binary.Read(r.src, binary.LittleEndian, &entryFields); err != nil {
+	if err := binary.Read(f.src, binary.LittleEndian, &entryFields); err != nil {
 		return nil, fmt.Errorf("failed to read entry object at offset %d: %w", offset, err)
 	}
 	entryObj.Seqnum = entryFields.Seqnum
@@ -256,41 +256,41 @@ func (r *Reader) readEntry(offset uint64) (*Entry, error) {
 		obj:       entryObj,
 	}
 
-	isCompact := r.header.IncompatibleFlags&compactFlag != 0
+	isCompact := f.header.IncompatibleFlags&compactFlag != 0
 
 	itemOffset := offset + 64
 
 	for itemOffset < offset+obj.Size {
-		if _, err := r.src.Seek(int64(itemOffset), io.SeekStart); err != nil {
+		if _, err := f.src.Seek(int64(itemOffset), io.SeekStart); err != nil {
 			return nil, fmt.Errorf("failed to seek to item at offset %d: %w", itemOffset, err)
 		}
 
 		if isCompact {
 			var dataOffset uint32
-			if err := binary.Read(r.src, binary.LittleEndian, &dataOffset); err != nil {
+			if err := binary.Read(f.src, binary.LittleEndian, &dataOffset); err != nil {
 				return nil, fmt.Errorf("failed to read compact item offset: %w", err)
 			}
 			itemOffset += 4
 			if dataOffset == 0 {
 				break
 			}
-			if err := r.readDataFields(entry, uint64(dataOffset)); err != nil {
+			if err := f.readDataFields(entry, uint64(dataOffset)); err != nil {
 				return nil, err
 			}
 		} else {
 			var dataOffset uint64
-			if err := binary.Read(r.src, binary.LittleEndian, &dataOffset); err != nil {
+			if err := binary.Read(f.src, binary.LittleEndian, &dataOffset); err != nil {
 				return nil, fmt.Errorf("failed to read item offset: %w", err)
 			}
 			var hash uint64
-			if err := binary.Read(r.src, binary.LittleEndian, &hash); err != nil {
+			if err := binary.Read(f.src, binary.LittleEndian, &hash); err != nil {
 				return nil, fmt.Errorf("failed to read item hash: %w", err)
 			}
 			itemOffset += 16
 			if dataOffset == 0 {
 				break
 			}
-			if err := r.readDataFields(entry, dataOffset); err != nil {
+			if err := f.readDataFields(entry, dataOffset); err != nil {
 				return nil, err
 			}
 		}
@@ -299,13 +299,13 @@ func (r *Reader) readEntry(offset uint64) (*Entry, error) {
 	return entry, nil
 }
 
-func (r *Reader) readDataFields(entry *Entry, dataOffset uint64) error {
-	if _, err := r.src.Seek(int64(dataOffset), io.SeekStart); err != nil {
+func (f *File) readDataFields(entry *Entry, dataOffset uint64) error {
+	if _, err := f.src.Seek(int64(dataOffset), io.SeekStart); err != nil {
 		return fmt.Errorf("failed to seek to data object at offset %d: %w", dataOffset, err)
 	}
 
 	var obj objectHeader
-	if err := binary.Read(r.src, binary.LittleEndian, &obj); err != nil {
+	if err := binary.Read(f.src, binary.LittleEndian, &obj); err != nil {
 		return fmt.Errorf("failed to read data object header: %w", err)
 	}
 
@@ -313,7 +313,7 @@ func (r *Reader) readDataFields(entry *Entry, dataOffset uint64) error {
 		return fmt.Errorf("expected data object at offset %d, got type %d", dataOffset, obj.Type)
 	}
 
-	isCompact := r.header.IncompatibleFlags&compactFlag != 0
+	isCompact := f.header.IncompatibleFlags&compactFlag != 0
 	var dataHeaderSize uint64
 	if isCompact {
 		dataHeaderSize = 16 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 4
@@ -322,11 +322,11 @@ func (r *Reader) readDataFields(entry *Entry, dataOffset uint64) error {
 	}
 
 	payloadSize := obj.Size - dataHeaderSize
-	if _, err := r.src.Seek(int64(dataOffset+dataHeaderSize), io.SeekStart); err != nil {
+	if _, err := f.src.Seek(int64(dataOffset+dataHeaderSize), io.SeekStart); err != nil {
 		return fmt.Errorf("failed to seek to data payload: %w", err)
 	}
 	payload := make([]byte, payloadSize)
-	if _, err := io.ReadFull(r.src, payload); err != nil {
+	if _, err := io.ReadFull(f.src, payload); err != nil {
 		return fmt.Errorf("failed to read data payload: %w", err)
 	}
 
@@ -340,67 +340,67 @@ func (r *Reader) readDataFields(entry *Entry, dataOffset uint64) error {
 }
 
 // Signature returns the 8-byte magic string that identifies valid journald files.
-func (r *Reader) Signature() string {
-	return string(r.header.Signature[:])
+func (f *File) Signature() string {
+	return string(f.header.Signature[:])
 }
 
 // HeaderSize returns the byte size of the file header. Entries begin at this offset.
-func (r *Reader) HeaderSize() uint64 {
-	return r.header.HeaderSize
+func (f *File) HeaderSize() uint64 {
+	return f.header.HeaderSize
 }
 
 // NEntries returns the total number of log entries recorded in this file's header.
 // This is the count at file open time — use Next() to iterate and count actual
 // entries reachable from the current offset.
-func (r *Reader) NEntries() uint64 {
-	return r.header.NEntries
+func (f *File) NEntries() uint64 {
+	return f.header.NEntries
 }
 
 // HeadEntrySeqnum returns the smallest sequence number in this file (the oldest entry).
 // Files are sorted by this value in Journal. Used for seqnum-based file lookup.
-func (r *Reader) HeadEntrySeqnum() uint64 {
-	return r.header.HeadEntrySeqnum
+func (f *File) HeadEntrySeqnum() uint64 {
+	return f.header.HeadEntrySeqnum
 }
 
 // TailEntrySeqnum returns the largest sequence number in this file (the newest entry).
 // Used for rotation detection and gap detection in Journal.Next().
-func (r *Reader) TailEntrySeqnum() uint64 {
-	return r.header.TailEntrySeqnum
+func (f *File) TailEntrySeqnum() uint64 {
+	return f.header.TailEntrySeqnum
 }
 
 // HeadEntryRealtime returns the wall-clock timestamp (microseconds since Unix epoch)
 // of the oldest entry in this file. Used by Journal.SeekRealtime to pick the best file.
-func (r *Reader) HeadEntryRealtime() uint64 {
-	return r.header.HeadEntryRealtime
+func (f *File) HeadEntryRealtime() uint64 {
+	return f.header.HeadEntryRealtime
 }
 
 // TailEntryRealtime returns the wall-clock timestamp (microseconds since Unix epoch)
 // of the newest entry in this file. Used by Journal.SeekRealtime to skip files
 // entirely before the target time.
-func (r *Reader) TailEntryRealtime() uint64 {
-	return r.header.TailEntryRealtime
+func (f *File) TailEntryRealtime() uint64 {
+	return f.header.TailEntryRealtime
 }
 
 // NObjects returns the total number of objects (entries, data fields, hash tables,
 // etc.) in the file's arena.
-func (r *Reader) NObjects() uint64 {
-	return r.header.NObjects
+func (f *File) NObjects() uint64 {
+	return f.header.NObjects
 }
 
 // ArenaSize returns the total byte size of the data arena (all objects after the header).
-func (r *Reader) ArenaSize() uint64 {
-	return r.header.ArenaSize
+func (f *File) ArenaSize() uint64 {
+	return f.header.ArenaSize
 }
 
 // TailObjectOffset returns the byte offset of the tail object (most recently written).
-func (r *Reader) TailObjectOffset() uint64 {
-	return r.header.TailObjectOffset
+func (f *File) TailObjectOffset() uint64 {
+	return f.header.TailObjectOffset
 }
 
 // Path returns the filesystem path of the underlying file, or empty string if the
-// Reader was constructed from an in-memory source.
-func (r *Reader) Path() string {
-	if f, ok := r.src.(*os.File); ok {
+// File was constructed from an in-memory source.
+func (f *File) Path() string {
+	if f, ok := f.src.(*os.File); ok {
 		return f.Name()
 	}
 	return ""
@@ -408,8 +408,8 @@ func (r *Reader) Path() string {
 
 // Exists reports whether the file still exists on disk. Used by Journal to detect
 // deleted files during cleanup.
-func (r *Reader) Exists() bool {
-	path := r.Path()
+func (f *File) Exists() bool {
+	path := f.Path()
 	if path == "" {
 		return false
 	}
@@ -421,14 +421,14 @@ func (r *Reader) Exists() bool {
 // (data fields, hash tables, etc.). Returns true and stores the entry if found.
 // Returns false at EOF or on read error. Call after Open or SeekHead/SeekRealtime
 // to read the first entry.
-func (r *Reader) Next() bool {
-	for r.offset < r.size {
-		if _, err := r.src.Seek(int64(r.offset), io.SeekStart); err != nil {
+func (f *File) Next() bool {
+	for f.offset < f.size {
+		if _, err := f.src.Seek(int64(f.offset), io.SeekStart); err != nil {
 			return false
 		}
 
 		var obj objectHeader
-		if err := binary.Read(r.src, binary.LittleEndian, &obj); err != nil {
+		if err := binary.Read(f.src, binary.LittleEndian, &obj); err != nil {
 			return false
 		}
 
@@ -436,52 +436,52 @@ func (r *Reader) Next() bool {
 			return false
 		}
 
-		next := (r.offset + obj.Size + 7) & ^uint64(7)
+		next := (f.offset + obj.Size + 7) & ^uint64(7)
 
 		if obj.Type == objectEntry {
-			entry, err := r.readEntry(r.offset)
+			entry, err := f.readEntry(f.offset)
 			if err != nil {
 				return false
 			}
-			r.offset = next
-			r.entry = entry
+			f.offset = next
+			f.entry = entry
 			return true
 		}
 
-		r.offset = next
+		f.offset = next
 	}
 	return false
 }
 
 // Entry returns the current entry, or nil if no entry has been read yet.
-func (r *Reader) Entry() *Entry {
-	return r.entry
+func (f *File) Entry() *Entry {
+	return f.entry
 }
 
 // NextEntry is a convenience wrapper: calls Next() then returns (Entry(), true)
 // on success, or (nil, false) if no more entries.
-func (r *Reader) NextEntry() (*Entry, bool) {
-	if r.Next() {
-		return r.Entry(), true
+func (f *File) NextEntry() (*Entry, bool) {
+	if f.Next() {
+		return f.Entry(), true
 	}
 	return nil, false
 }
 
 // SeekHead resets the read position to the first entry in the file. The next
 // call to Next() will return the oldest entry.
-func (r *Reader) SeekHead() {
-	r.offset = r.header.HeaderSize
-	r.entry = nil
+func (f *File) SeekHead() {
+	f.offset = f.header.HeaderSize
+	f.entry = nil
 }
 
 // Seek positions the reader at the entry with the given seqnum and reads it
 // into Entry(). If seqnum < HeadEntrySeqnum, loads the first entry (may be
 // after the target). If seqnum >= TailEntrySeqnum, loads the last entry.
 // Returns true if the loaded entry's seqnum is >= seqnum.
-func (r *Reader) Seek(seqnum uint64) bool {
-	r.SeekHead()
-	for r.Next() {
-		if r.entry.Seqnum() >= seqnum {
+func (f *File) Seek(seqnum uint64) bool {
+	f.SeekHead()
+	for f.Next() {
+		if f.entry.Seqnum() >= seqnum {
 			return true
 		}
 	}
@@ -490,38 +490,38 @@ func (r *Reader) Seek(seqnum uint64) bool {
 
 // SeekTail positions the reader at the last entry in the file and reads it
 // into Entry(). Equivalent to Seek(tailSeqnum).
-func (r *Reader) SeekTail() {
-	r.Seek(r.header.TailEntrySeqnum)
+func (f *File) SeekTail() {
+	f.Seek(f.header.TailEntrySeqnum)
 }
 
 // SeekRealtime positions the reader at the first entry whose realtime timestamp
 // is >= t and reads it into Entry(). If t is before the head realtime, loads
 // the first entry (may be after t). If t is after the tail realtime, loads the
 // last entry. Returns true if the loaded entry's timestamp is >= t.
-func (r *Reader) SeekRealtime(t time.Time) bool {
+func (f *File) SeekRealtime(t time.Time) bool {
 	usec := uint64(t.UnixMicro())
 
-	r.SeekHead()
-	for r.Next() {
-		if r.entry.Realtime() >= usec {
+	f.SeekHead()
+	for f.Next() {
+		if f.entry.Realtime() >= usec {
 			return true
 		}
 	}
 	return false
 }
 
-func (r *Reader) containsSeqnum(seqnum uint64) bool {
+func (f *File) containsSeqnum(seqnum uint64) bool {
 	if seqnum == 0 {
 		return false
 	}
-	return seqnum >= r.header.HeadEntrySeqnum && seqnum <= r.header.TailEntrySeqnum
+	return seqnum >= f.header.HeadEntrySeqnum && seqnum <= f.header.TailEntrySeqnum
 }
 
 // Close releases the underlying file descriptor. After Close, all methods return
 // zero values or errors.
-func (r *Reader) Close() error {
-	if r.closer != nil {
-		return r.closer.Close()
+func (f *File) Close() error {
+	if f.closer != nil {
+		return f.closer.Close()
 	}
 	return nil
 }
