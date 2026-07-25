@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/abferm/loki-lite/journal"
 )
@@ -32,7 +33,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	j.Follow(ctx, func(e *journal.Entry) bool {
+	j.Follow(ctx, 10*time.Millisecond, func(e *journal.Entry) bool {
 		msg := e.Get("MESSAGE")
 		if msg == "" {
 			msg = "no MESSAGE"

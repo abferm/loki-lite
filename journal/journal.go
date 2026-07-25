@@ -353,30 +353,30 @@ func (j *Journal) Close() error {
 	return nil
 }
 
-// Follow polls for new entries every 10ms and calls fn for each entry. Returns
-// true (stopped early) if fn returns false or ctx is cancelled. Returns false if
-// ctx is cancelled while waiting for new entries. Useful for tailing live journals:
+// Follow polls for new entries at the given interval and calls fn for each
+// entry. Returns nil if fn returns false (stopped early). Returns the context
+// cause if ctx is cancelled. Useful for tailing live journals:
 //
 //	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 //	defer stop()
-//	j.Follow(ctx, func(e *Entry) bool {
+//	err := j.Follow(ctx, 10*time.Millisecond, func(e *Entry) bool {
 //	    fmt.Println(e)
 //	    return true // keep following
 //	})
-func (j *Journal) Follow(ctx context.Context, fn func(*Entry) bool) bool {
-	ticker := time.NewTicker(10 * time.Millisecond)
+func (j *Journal) Follow(ctx context.Context, pollInterval time.Duration, fn func(*Entry) bool) error {
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
 		for entry, ok := j.NextEntry(); ok && ctx.Err() == nil; entry, ok = j.NextEntry() {
 			if !fn(entry) {
-				return true
+				return nil
 			}
 		}
 
 		select {
 		case <-ctx.Done():
-			return false
+			return context.Cause(ctx)
 		case <-ticker.C:
 		}
 	}
