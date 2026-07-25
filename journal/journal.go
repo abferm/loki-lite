@@ -392,3 +392,64 @@ func (j *Journal) NFiles() int {
 func (j *Journal) Files() []*File {
 	return j.files
 }
+
+// Fields returns all distinct field names (label names) across all files in the journal.
+func (j *Journal) Fields() ([]string, error) {
+	seen := make(map[string]struct{})
+	for _, f := range j.files {
+		fields, err := f.Fields()
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range fields {
+			seen[name] = struct{}{}
+		}
+	}
+
+	result := make([]string, 0, len(seen))
+	for name := range seen {
+		result = append(result, name)
+	}
+	return result, nil
+}
+
+// FieldValues returns all distinct values for the named field across all files in the journal,
+// up to limit values. If truncated is true, the limit was reached.
+func (j *Journal) FieldValues(name string, limit int) ([]string, bool, error) {
+	if limit <= 0 {
+		return nil, false, fmt.Errorf("limit must be > 0")
+	}
+
+	seen := make(map[string]struct{})
+	for _, f := range j.files {
+		vals, truncated, err := f.FieldValues(name, limit)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, v := range vals {
+			if _, exists := seen[v]; !exists {
+				if len(seen) >= limit {
+					result := make([]string, 0, len(seen))
+					for val := range seen {
+						result = append(result, val)
+					}
+					return result, true, nil
+				}
+			}
+			seen[v] = struct{}{}
+		}
+		if truncated {
+			result := make([]string, 0, len(seen))
+			for val := range seen {
+				result = append(result, val)
+			}
+			return result, true, nil
+		}
+	}
+
+	result := make([]string, 0, len(seen))
+	for v := range seen {
+		result = append(result, v)
+	}
+	return result, false, nil
+}

@@ -41,6 +41,10 @@ type File struct {
 	header FileHeader
 	offset uint64
 	entry  *Entry
+
+	cachedFields      []string
+	cachedFieldValues map[string][]string
+	fieldsCached      bool
 }
 
 // FileHeader holds the binary header of a journald journal file. HeadEntrySeqnum
@@ -100,6 +104,13 @@ type entryObject struct {
 	XORHash      uint64
 }
 
+type fieldObject struct {
+	hash           uint64
+	nextHashOffset uint64
+	headDataOffset uint64
+	payload        []byte
+}
+
 // Open opens a journald journal file for reading. Returns error if the file
 // doesn't exist, isn't a valid journal file, or can't be read. The File
 // starts positioned at the first entry (after the header).
@@ -115,7 +126,7 @@ func Open(path string) (*File, error) {
 		return nil, fmt.Errorf("failed to stat journal file: %w", err)
 	}
 
-	f := &File{src: src, size: uint64(info.Size()), closer: src}
+	f := &File{src: src, size: uint64(info.Size()), closer: src, cachedFieldValues: make(map[string][]string)}
 	if err := f.readHeader(); err != nil {
 		src.Close()
 		return nil, err
@@ -524,6 +535,255 @@ func (f *File) Close() error {
 		return f.closer.Close()
 	}
 	return nil
+}
+
+func (f *File) readFieldObject(offset uint64) (*fieldObject, error) {
+	if _, err := f.src.Seek(int64(offset), io.SeekStart); err != nil {
+		return nil, fmt.Errorf("failed to seek to field object at offset %d: %w", offset, err)
+	}
+
+	var obj objectHeader
+	if err := binary.Read(f.src, binary.LittleEndian, &obj); err != nil {
+		return nil, fmt.Errorf("failed to read field object header at offset %d: %w", offset, err)
+	}
+
+	if obj.Type != objectField {
+		return nil, fmt.Errorf("expected field object at offset %d, got type %d", offset, obj.Type)
+	}
+
+	fo := &fieldObject{}
+	if err := binary.Read(f.src, binary.LittleEndian, &fo.hash); err != nil {
+		return nil, fmt.Errorf("failed to read field hash at offset %d: %w", offset, err)
+	}
+	if err := binary.Read(f.src, binary.LittleEndian, &fo.nextHashOffset); err != nil {
+		return nil, fmt.Errorf("failed to read field next_hash_offset at offset %d: %w", offset, err)
+	}
+	if err := binary.Read(f.src, binary.LittleEndian, &fo.headDataOffset); err != nil {
+		return nil, fmt.Errorf("failed to read field head_data_offset at offset %d: %w", offset, err)
+	}
+
+	payloadSize := obj.Size - 40 // 16 (objectHeader) + 8 (hash) + 8 (nextHash) + 8 (headData)
+	fo.payload = make([]byte, payloadSize)
+	if _, err := io.ReadFull(f.src, fo.payload); err != nil {
+		return nil, fmt.Errorf("failed to read field payload at offset %d: %w", offset, err)
+	}
+
+	return fo, nil
+}
+
+func (f *File) readDataObjectPayload(offset uint64) (key, value string, nextFieldOffset uint64, err error) {
+	if _, err := f.src.Seek(int64(offset), io.SeekStart); err != nil {
+		return "", "", 0, fmt.Errorf("failed to seek to data object at offset %d: %w", offset, err)
+	}
+
+	var obj objectHeader
+	if err := binary.Read(f.src, binary.LittleEndian, &obj); err != nil {
+		return "", "", 0, fmt.Errorf("failed to read data object header at offset %d: %w", offset, err)
+	}
+
+	if obj.Type != objectData {
+		return "", "", 0, fmt.Errorf("expected data object at offset %d, got type %d", offset, obj.Type)
+	}
+
+	// Read hash, next_hash_offset, next_field_offset
+	var hash uint64
+	if err := binary.Read(f.src, binary.LittleEndian, &hash); err != nil {
+		return "", "", 0, fmt.Errorf("failed to read data hash at offset %d: %w", offset, err)
+	}
+	var nextHashOffset uint64
+	if err := binary.Read(f.src, binary.LittleEndian, &nextHashOffset); err != nil {
+		return "", "", 0, fmt.Errorf("failed to read data next_hash_offset at offset %d: %w", offset, err)
+	}
+	if err := binary.Read(f.src, binary.LittleEndian, &nextFieldOffset); err != nil {
+		return "", "", 0, fmt.Errorf("failed to read data next_field_offset at offset %d: %w", offset, err)
+	}
+
+	isCompact := f.header.IncompatibleFlags&compactFlag != 0
+	var dataHeaderSize uint64
+	if isCompact {
+		dataHeaderSize = 16 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 4
+	} else {
+		dataHeaderSize = 16 + 8 + 8 + 8 + 8 + 8 + 8
+	}
+
+	payloadSize := obj.Size - dataHeaderSize
+	if _, err := f.src.Seek(int64(offset+dataHeaderSize), io.SeekStart); err != nil {
+		return "", "", 0, fmt.Errorf("failed to seek to data payload at offset %d: %w", offset, err)
+	}
+	payload := make([]byte, payloadSize)
+	if _, err := io.ReadFull(f.src, payload); err != nil {
+		return "", "", 0, fmt.Errorf("failed to read data payload at offset %d: %w", offset, err)
+	}
+
+	if equalsIdx := indexOf(payload, '='); equalsIdx >= 0 {
+		key = string(payload[:equalsIdx])
+		value = string(payload[equalsIdx+1:])
+	}
+
+	return key, value, nextFieldOffset, nil
+}
+
+// Fields returns all distinct field names (label names) present in this journal file.
+// For archived (non-rotating) files, results are cached after the first call.
+func (f *File) Fields() ([]string, error) {
+	if f.fieldsCached {
+		return f.cachedFields, nil
+	}
+
+	if f.header.FieldTableOffset == 0 || f.header.FieldTableSize == 0 {
+		return nil, nil
+	}
+
+	numSlots := f.header.FieldTableSize / 16
+	seen := make(map[string]struct{})
+
+	savedOffset := f.offset
+	defer func() { f.offset = savedOffset }()
+
+	for slot := uint64(0); slot < numSlots; slot++ {
+		slotOff := f.header.FieldTableOffset + slot*16
+
+		var headOffset uint64
+		if _, err := f.src.Seek(int64(slotOff), io.SeekStart); err != nil {
+			return nil, fmt.Errorf("failed to seek to field hash table slot at offset %d: %w", slotOff, err)
+		}
+		if err := binary.Read(f.src, binary.LittleEndian, &headOffset); err != nil {
+			return nil, fmt.Errorf("failed to read field hash table head at offset %d: %w", slotOff, err)
+		}
+		// Skip tail offset (8 bytes)
+		if _, err := f.src.Seek(8, io.SeekCurrent); err != nil {
+			return nil, fmt.Errorf("failed to skip field hash table tail: %w", err)
+		}
+
+		if headOffset == 0 {
+			continue
+		}
+
+		// Walk the chain of field objects
+		off := headOffset
+		for off != 0 {
+			fo, err := f.readFieldObject(off)
+			if err != nil {
+				return nil, err
+			}
+			name := string(fo.payload)
+			if i := indexOf(fo.payload, 0); i >= 0 {
+				name = string(fo.payload[:i])
+			}
+			seen[name] = struct{}{}
+			off = fo.nextHashOffset
+		}
+	}
+
+	result := make([]string, 0, len(seen))
+	for name := range seen {
+		result = append(result, name)
+	}
+
+	if f.State() == stateArchived {
+		f.cachedFields = result
+		f.fieldsCached = true
+	}
+
+	return result, nil
+}
+
+// FieldValues returns all distinct values for the named field (label) in this journal file,
+// up to limit values. If truncated is true, the limit was reached and the result is not
+// cached — the caller may retry with a higher limit. For archived (non-rotating) files,
+// complete (non-truncated) results are cached after the first call.
+func (f *File) FieldValues(name string, limit int) ([]string, bool, error) {
+	if limit <= 0 {
+		return nil, false, fmt.Errorf("limit must be > 0")
+	}
+
+	if vals, ok := f.cachedFieldValues[name]; ok {
+		return vals, false, nil
+	}
+
+	if f.header.FieldTableOffset == 0 || f.header.FieldTableSize == 0 {
+		return nil, false, nil
+	}
+
+	savedOffset := f.offset
+	defer func() { f.offset = savedOffset }()
+
+	fileID := f.header.FileID
+	numSlots := f.header.FieldTableSize / 16
+	hash := SipHash24(fileID, []byte(name))
+	slot := hash % numSlots
+	slotOff := f.header.FieldTableOffset + slot*16
+
+	var headOffset uint64
+	if _, err := f.src.Seek(int64(slotOff), io.SeekStart); err != nil {
+		return nil, false, fmt.Errorf("failed to seek to field hash table slot at offset %d: %w", slotOff, err)
+	}
+	if err := binary.Read(f.src, binary.LittleEndian, &headOffset); err != nil {
+		return nil, false, fmt.Errorf("failed to read field hash table head at offset %d: %w", slotOff, err)
+	}
+
+	if headOffset == 0 {
+		return nil, false, nil
+	}
+
+	// Walk the chain to find the matching field object
+	off := headOffset
+	for off != 0 {
+		fo, err := f.readFieldObject(off)
+		if err != nil {
+			return nil, false, err
+		}
+		foName := string(fo.payload)
+		if i := indexOf(fo.payload, 0); i >= 0 {
+			foName = string(fo.payload[:i])
+		}
+		if foName == name {
+			// Found it — walk the data chain
+			vals, truncated, err := f.collectFieldValues(fo.headDataOffset, limit)
+			if err != nil {
+				return nil, false, err
+			}
+			if !truncated && f.State() == stateArchived {
+				f.cachedFieldValues[name] = vals
+			}
+			return vals, truncated, nil
+		}
+		off = fo.nextHashOffset
+	}
+
+	return nil, false, nil
+}
+
+func (f *File) collectFieldValues(headDataOffset uint64, limit int) ([]string, bool, error) {
+	seen := make(map[string]struct{})
+	off := headDataOffset
+
+	for off != 0 {
+		key, value, nextFieldOffset, err := f.readDataObjectPayload(off)
+		if err != nil {
+			return nil, false, err
+		}
+		if key != "" {
+			if _, exists := seen[value]; !exists {
+				if len(seen) >= limit {
+					result := make([]string, 0, len(seen))
+					for val := range seen {
+						result = append(result, val)
+					}
+					return result, true, nil
+				}
+			}
+			seen[value] = struct{}{}
+		}
+		off = nextFieldOffset
+	}
+
+	result := make([]string, 0, len(seen))
+	for val := range seen {
+		result = append(result, val)
+	}
+
+	return result, false, nil
 }
 
 func indexOf(data []byte, b byte) int {
