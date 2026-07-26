@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/abferm/loki-lite/journal"
+	"github.com/abferm/loki-lite/model"
+	"github.com/prometheus/prometheus/model/labels"
 )
 
 // DefaultLabelValuesLimit is the maximum number of distinct values returned
@@ -17,8 +19,7 @@ import (
 // fields like MESSAGE or timestamps.
 const DefaultLabelValuesLimit = 10000
 
-// ErrLabelExcluded is returned when a label is in the engine's blacklist
-// and cannot be queried.
+// ErrLabelExcluded is returned when a label is not in the schema's label set.
 var ErrLabelExcluded = fmt.Errorf("label excluded by configuration")
 
 // Stats holds approximate counts returned by IndexStats.
@@ -31,20 +32,15 @@ type Stats struct {
 
 // Engine executes Loki-compatible queries against journald journals.
 type Engine struct {
-	journal   *journal.Journal
-	blacklist map[string]struct{}
+	journal *journal.Journal
+	schema  *model.Schema
 }
 
-// New creates an Engine that reads from j and excludes blacklisted labels
-// from Labels and LabelValues results. The blacklist is a list of field
-// names (e.g. "MESSAGE", "__REALTIME_TIMESTAMP") that should not be
-// treated as Loki labels.
-func New(j *journal.Journal, blacklist []string) *Engine {
-	bl := make(map[string]struct{}, len(blacklist))
-	for _, name := range blacklist {
-		bl[name] = struct{}{}
-	}
-	return &Engine{journal: j, blacklist: bl}
+// New creates an Engine that reads from j and uses schema to determine which
+// fields are stream labels. Fields not in schema.Labels are treated as
+// structured metadata, not stream identity.
+func New(j *journal.Journal, schema *model.Schema) *Engine {
+	return &Engine{journal: j, schema: schema}
 }
 
 // QueryRange executes a range query over log streams.
@@ -57,28 +53,16 @@ func (e *Engine) Query(query string, ts time.Time, limit int, direction string) 
 	panic("unimplemented")
 }
 
-// Labels returns all distinct label names across the available journal files,
-// excluding blacklisted fields.
+// Labels returns all configured label names from the schema.
 func (e *Engine) Labels() ([]string, error) {
-	fields, err := e.journal.Fields()
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]string, 0, len(fields))
-	for _, name := range fields {
-		if _, excluded := e.blacklist[name]; !excluded {
-			result = append(result, name)
-		}
-	}
-	return result, nil
+	return e.schema.LabelNames(), nil
 }
 
 // LabelValues returns all distinct values for the named label across the
 // available journal files, up to DefaultLabelValuesLimit values. Returns
-// ErrLabelExcluded if the label is blacklisted.
+// ErrLabelExcluded if the label is not in the schema.
 func (e *Engine) LabelValues(name string) ([]string, error) {
-	if _, excluded := e.blacklist[name]; excluded {
+	if !e.schema.IsLabel(name) {
 		return nil, ErrLabelExcluded
 	}
 
@@ -116,17 +100,17 @@ func (e *Engine) Series(filters []any, start, end time.Time) ([]map[string]strin
 	seen := make(map[string]struct{})
 	e.forEachEntry(start, end, func(entry *journal.Entry) {
 		for range filters {
-			seen[labelSetKey(entry.Fields, e.blacklist)] = struct{}{}
+			seen[streamKey(entry.Fields, e.schema)] = struct{}{}
 			break
 		}
 	})
 
 	result := make([]map[string]string, 0, len(seen))
 	for key := range seen {
-		result = append(result, keyToLabelSet(key))
+		result = append(result, parseStringNoSpace(key))
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return labelSetKey(result[i], e.blacklist) < labelSetKey(result[j], e.blacklist)
+		return streamKey(result[i], e.schema) < streamKey(result[j], e.schema)
 	})
 	return result, nil
 }
@@ -140,7 +124,7 @@ func (e *Engine) IndexStats(filter any, start, end time.Time) (*Stats, error) {
 	e.forEachEntry(start, end, func(entry *journal.Entry) {
 		stats.Entries++
 		stats.Bytes += int64(len(entry.Message()))
-		streams[labelSetKey(entry.Fields, e.blacklist)] = struct{}{}
+		streams[streamKey(entry.Fields, e.schema)] = struct{}{}
 	})
 
 	stats.Streams = int64(len(streams))
@@ -148,39 +132,25 @@ func (e *Engine) IndexStats(filter any, start, end time.Time) (*Stats, error) {
 	return stats, nil
 }
 
-// labelSetKey produces a deterministic string key for a label map by sorting
-// the key-value pairs. Blacklisted fields are excluded since they represent
-// log line content, not stream identity.
-func labelSetKey(fields map[string]string, blacklist map[string]struct{}) string {
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
-		if _, excluded := blacklist[k]; !excluded {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-
-	var b strings.Builder
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(fields[k])
-	}
-	return b.String()
+// streamKey produces a deterministic string key for the schema-defined labels
+// in fields using labels.Labels.StringNoSpace.
+func streamKey(fields map[string]string, schema *model.Schema) string {
+	return labels.FromMap(schema.StreamLabelsMap(fields)).StringNoSpace()
 }
 
-// keyToLabelSet converts a sorted "k=v,k=v" string back into a map.
-func keyToLabelSet(key string) map[string]string {
-	if key == "" {
+// parseStringNoSpace parses a labels.Labels.StringNoSpace representation
+// (e.g. `{PRIORITY="4",job="sshd"}`) back into a map.
+func parseStringNoSpace(s string) map[string]string {
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	if s == "" {
 		return map[string]string{}
 	}
 	m := make(map[string]string)
-	for _, pair := range strings.Split(key, ",") {
-		if idx := strings.IndexByte(pair, '='); idx >= 0 {
-			m[pair[:idx]] = pair[idx+1:]
+	for _, pair := range strings.Split(s, ",") {
+		k, v, ok := strings.Cut(pair, "=")
+		if ok {
+			m[k] = strings.Trim(v, `"`)
 		}
 	}
 	return m

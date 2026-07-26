@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/abferm/loki-lite/journal"
+	"github.com/abferm/loki-lite/model"
 )
 
 type testEntry struct {
@@ -223,7 +224,7 @@ func TestSeriesEmpty(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, nil)
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	// Empty filters returns nil.
 	result, err := eng.Series(nil, time.Unix(0, 0), time.Unix(10, 0))
@@ -248,7 +249,7 @@ func TestSeriesMatchAll(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, nil)
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	result, err := eng.Series([]any{"all"}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -282,7 +283,7 @@ func TestSeriesTimeRange(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, nil)
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	// Query 2s to 6s — should match only job=b.
 	result, err := eng.Series([]any{"all"}, time.Unix(2, 0), time.Unix(6, 0))
@@ -310,13 +311,13 @@ func TestSeriesDeduplication(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, []string{"MESSAGE"})
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	result, err := eng.Series([]any{"all"}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Both entries have the same label set {job: sshd} after excluding MESSAGE — should dedup to 1.
+	// Both entries have the same label set {job: sshd} — should dedup to 1.
 	if len(result) != 1 {
 		t.Fatalf("expected 1 label set after dedup, got %d: %v", len(result), result)
 	}
@@ -335,7 +336,7 @@ func TestIndexStatsMatchAll(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, nil)
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	stats, err := eng.IndexStats("all", time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -369,7 +370,7 @@ func TestIndexStatsTimeRange(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, nil)
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	// Query 2s to 6s — only entry at 5s.
 	stats, err := eng.IndexStats("all", time.Unix(2, 0), time.Unix(6, 0))
@@ -397,7 +398,7 @@ func TestIndexStatsDeduplicatesStreams(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, []string{"MESSAGE"})
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	stats, err := eng.IndexStats("all", time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -406,7 +407,7 @@ func TestIndexStatsDeduplicatesStreams(t *testing.T) {
 	if stats.Entries != 2 {
 		t.Errorf("expected 2 entries, got %d", stats.Entries)
 	}
-	// Both have same label set {job: sshd} after excluding MESSAGE — should count as 1 stream.
+	// Both have same label set {job: sshd} — should count as 1 stream.
 	if stats.Streams != 1 {
 		t.Errorf("expected 1 stream, got %d", stats.Streams)
 	}
@@ -424,7 +425,7 @@ func TestLabels(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, []string{"MESSAGE"})
+	eng := New(j, &model.Schema{Labels: []string{"PRIORITY", "job"}})
 
 	labels, err := eng.Labels()
 	if err != nil {
@@ -456,7 +457,7 @@ func TestLabelValues(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, nil)
+	eng := New(j, &model.Schema{Labels: []string{"job", "PRIORITY"}})
 
 	vals, err := eng.LabelValues("job")
 	if err != nil {
@@ -487,7 +488,7 @@ func TestLabelValuesExcluded(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, []string{"MESSAGE"})
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	_, err = eng.LabelValues("MESSAGE")
 	if err != ErrLabelExcluded {
