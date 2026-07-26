@@ -1,5 +1,5 @@
 # Start from the official Go image — it already has Go installed and ready
-FROM golang:1.26.0-bookworm AS dev
+FROM golang:1.26.5-bookworm AS dev
 
 # Every command after this runs in the /app folder inside the container
 WORKDIR /app
