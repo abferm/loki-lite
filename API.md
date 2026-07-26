@@ -1,6 +1,6 @@
-# handler
+# loki-lite
 
-HTTP API handlers that translate [Loki API requests](https://grafana.com/docs/loki/latest/reference/loki-http-api/) into journald queries.
+Query-only Loki-compatible API backed by journald. Translates [Loki API requests](https://grafana.com/docs/loki/latest/reference/loki-http-api/) into journald journal operations.
 
 ## Endpoint coverage
 
@@ -14,6 +14,7 @@ HTTP API handlers that translate [Loki API requests](https://grafana.com/docs/lo
 | `/loki/api/v1/label/<name>/values` | GET | List values for a label |
 | `/loki/api/v1/series` | GET | List matching label sets |
 | `/loki/api/v1/index/stats` | GET | Approximate stream/chunk/entry/byte counts |
+| `/loki/api/v1/format_query` | GET | Format and validate a LogQL query |
 | `/ready` | GET | Readiness probe (always 200) |
 
 ### Not implemented
@@ -31,12 +32,11 @@ These endpoints are out of scope for a query-only journald bridge:
 | `/loki/api/v1/detected_fields` | Requires field detection across streams |
 | `/loki/api/v1/delete` | No storage to delete from |
 | `/loki/api/v1/rules` | Ruler component; not applicable |
-| `/loki/api/v1/format_query` | LogQL parser; out of scope |
 | Ring, flush, shutdown endpoints | Microservices internals; not applicable |
 
 ## LogQL support
 
-Journald provides structured key-value fields natively, so full LogQL pipeline support isn't needed for most queries. The supported subset:
+Journald provides structured key-value fields natively, so full LogQL pipeline support isn't needed for most queries. However, the imported Loki `logql` library provides full parsing and pipeline execution, so nearly all LogQL syntax is supported.
 
 ### Stream selectors (full support)
 
@@ -57,27 +57,50 @@ Post-read string matching on the log line (`MESSAGE` field):
 ```
 {job="sshd"} |= "Accepted"
 {job="sshd"} !~ "password"
+{job="sshd"} |~ "status=(200|301)"
 ```
 
-### Label filters (partial support)
+### Label filters (full support)
 
-Can filter on labels that exist as journald fields without requiring a parser stage:
+Filter on labels that exist as journald fields:
 
 ```
 {job="sshd"} | PRIORITY="4"
+{job="sshd"} | json | level="error"
 ```
 
-Pipeline parsers (`| json`, `| logfmt`, `| pattern`) are not supported. Journald already provides structured fields, so most use cases are covered by direct label filtering.
+### Pipeline parsers (full support)
 
-### Metric queries (partial support)
+Full LogQL pipeline parsing via the Loki `logql` library. Since journald already provides structured fields, parsers are most useful for reinterpreting the MESSAGE field or composing with label filters:
 
-Basic aggregation functions that can be answered by counting entries in time windows:
+```
+{job="sshd"} | json
+{job="sshd"} | logfmt
+{job="sshd"} | pattern "<_> status=<status>"
+{job="sshd"} | regexp "status=(?P<status>\d+)"
+```
+
+### Line and label formatting (full support)
+
+```
+{job="sshd"} | json | line_format "{{.status}}"
+{job="sshd"} | json | label_format status="ok"
+```
+
+### Metric queries (full support)
+
+Any LogQL metric expression is supported, including `unwrap` and nested aggregations:
 
 - `count_over_time({job="sshd"}[5m])`
 - `rate({job="sshd"}[5m])`
-- `sum`, `avg`, `min`, `max` over the above
+- `rate({job="sshd"} | unwrap duration [5m])`
+- `sum(count_over_time({job="sshd"}[5m]))`
+- `topk(5, count_over_time({job="sshd"}[5m]))`
+- `avg(rate({job="sshd"} | unwrap duration [5m]))`
 
-Complex metric queries involving multiple label combinations or subqueries are not supported.
+### Format query
+
+`/loki/api/v1/format_query` parses and pretty-prints any LogQL query using the Loki `logql/syntax` parser. Invalid queries return a parse error.
 
 ## Query translation
 
@@ -85,14 +108,15 @@ Each incoming Loki query is translated to journald operations as follows:
 
 1. **Stream selector** -> `journal.OpenJournal` + entry iteration with field matching
 2. **Time range** -> `File.SeekRealtime(start)` to position at the start time, then iterate until `end`
-3. **Line filters** -> In-memory string matching on `Entry.Message()`
-4. **Limit** -> Stop iteration after N matching entries
-5. **Direction** -> Forward iteration (oldest first) or reverse (newest first via `SeekTail` + reverse scan)
+3. **Pipeline stages** -> Loki `log.Pipeline` processes each entry (line filters, parsers, label filters, formatting)
+4. **Metric extractors** -> Loki `log.SampleExtractor` extracts numeric values from matching entries
+5. **Limit** -> Stop iteration after N matching entries
+6. **Direction** -> Forward iteration (oldest first) or reverse (newest first via `SeekTail` + reverse scan)
 
 ### Label queries
 
-- `GET /loki/api/v1/labels` returns all distinct field names across the available journal files
-- `GET /loki/api/v1/label/<name>/values` returns all distinct values for the named field
+- `GET /loki/api/v1/labels` returns all configured label names from the schema
+- `GET /loki/api/v1/label/<name>/values` returns all distinct values for the named label
 
 **Note:** The `start` and `end` time range parameters on the labels and label values endpoints are accepted for API compatibility but ignored. Results reflect all labels and values present in the available journal files, not just those within the requested time range.
 
@@ -120,14 +144,19 @@ All responses use the standard Loki JSON envelope:
 ## Architecture
 
 ```
-handler/
-├── handler.go      # HTTP handler registration and middleware
-├── query.go        # /loki/api/v1/query and /loki/api/v1/query_range
-├── labels.go       # /loki/api/v1/labels and /loki/api/v1/label/<name>/values
-├── series.go       # /loki/api/v1/series
-├── stats.go        # /loki/api/v1/index/stats
-├── ready.go        # /ready
-└── model.go        # Loki API response types
+model/
+├── model.go           # Schema, Entry types, journal-to-Loki conversion
+
+query/
+├── log_pipeline.go    # LogQL log selector parsing and pipeline execution
+├── metric_pipeline.go # LogQL metric query parsing and sample extraction
+
+engine/
+├── engine.go          # Query orchestration, label queries, series, stats
+
+journal/
+├── journal.go         # Journald file reading, field hash table, entry iteration
+├── file.go            # Low-level journal file format parsing
 ```
 
-The handler package exposes an `http.Handler` (or `http.HandlerFunc`) that can be mounted on any `http.ServeMux` or embedded in other applications. It depends only on the `journal` package and the Go standard library.
+The `query` package wraps the Loki `logql` library to parse and execute LogQL queries against `model.Entry` values. The `engine` package orchestrates journal iteration and delegates filtering/extraction to the query pipeline.
