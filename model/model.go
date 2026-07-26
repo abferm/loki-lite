@@ -43,17 +43,17 @@ func (s Schema) IsLabel(name string) bool {
 	})
 }
 
-// JustLabels returns the subset of fieldKeys that are configured label fields,
-// preserving the order of s.Labels.
-func (s Schema) JustLabels(fieldKeys []string) []string {
+// FieldToLabelKeys returns the subset of fieldKeys that are configured label
+// fields, lowercased and preserving the order of s.Labels.
+func (s Schema) FieldToLabelKeys(fieldKeys []string) []string {
 	set := make(map[string]struct{}, len(fieldKeys))
 	for _, k := range fieldKeys {
-		set[k] = struct{}{}
+		set[strings.ToLower(k)] = struct{}{}
 	}
 	var out []string
 	for _, l := range s.Labels {
-		if _, ok := set[l]; ok {
-			out = append(out, l)
+		if _, ok := set[strings.ToLower(l)]; ok {
+			out = append(out, strings.ToLower(l))
 		}
 	}
 	return out

@@ -99,16 +99,30 @@ func TestNewSchemaDeduplicates(t *testing.T) {
 	}
 }
 
-func TestJustLabels(t *testing.T) {
+func TestFieldToLabelKeys(t *testing.T) {
 	schema := Schema{Labels: []string{"job", "PRIORITY", "instance"}}
-	got := schema.JustLabels([]string{"MESSAGE", "job", "instance"})
+	got := schema.FieldToLabelKeys([]string{"MESSAGE", "job", "instance"})
 	want := []string{"job", "instance"}
 	if len(got) != len(want) {
-		t.Fatalf("JustLabels = %v, want %v", got, want)
+		t.Fatalf("FieldToLabelKeys = %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("JustLabels = %v, want %v", got, want)
+			t.Fatalf("FieldToLabelKeys = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestFieldToLabelKeysLowercases(t *testing.T) {
+	schema := Schema{Labels: []string{"PRIORITY", "_SYSTEMD_UNIT"}}
+	got := schema.FieldToLabelKeys([]string{"PRIORITY", "_SYSTEMD_UNIT", "MESSAGE"})
+	want := []string{"priority", "_systemd_unit"}
+	if len(got) != len(want) {
+		t.Fatalf("FieldToLabelKeys = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("FieldToLabelKeys = %v, want %v", got, want)
 		}
 	}
 }

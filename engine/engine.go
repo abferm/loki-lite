@@ -53,9 +53,14 @@ func (e *Engine) Query(query string, ts time.Time, limit int, direction string) 
 	panic("unimplemented")
 }
 
-// Labels returns all configured label names from the schema.
+// Labels returns the configured label names that are actually present in the
+// journal files, lowercased to match Loki conventions.
 func (e *Engine) Labels() ([]string, error) {
-	return e.schema.LabelNames(), nil
+	fields, err := e.journal.Fields()
+	if err != nil {
+		return nil, err
+	}
+	return e.schema.FieldToLabelKeys(fields), nil
 }
 
 // LabelValues returns all distinct values for the named label across the
