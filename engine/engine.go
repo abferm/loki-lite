@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/abferm/loki-lite/journal"
-	"github.com/abferm/loki-lite/query"
 )
 
 // DefaultLabelValuesLimit is the maximum number of distinct values returned
@@ -109,18 +108,16 @@ func (e *Engine) forEachEntry(start, end time.Time, fn func(*journal.Entry)) {
 
 // Series returns the distinct label sets matching the given filters within the
 // time range. Each filter represents a parsed stream selector.
-func (e *Engine) Series(filters []query.Filter, start, end time.Time) ([]map[string]string, error) {
+func (e *Engine) Series(filters []any, start, end time.Time) ([]map[string]string, error) {
 	if len(filters) == 0 {
 		return nil, nil
 	}
 
 	seen := make(map[string]struct{})
 	e.forEachEntry(start, end, func(entry *journal.Entry) {
-		for _, f := range filters {
-			if f.Match(*entry) {
-				seen[labelSetKey(entry.Fields, e.blacklist)] = struct{}{}
-				break
-			}
+		for range filters {
+			seen[labelSetKey(entry.Fields, e.blacklist)] = struct{}{}
+			break
 		}
 	})
 
@@ -136,14 +133,11 @@ func (e *Engine) Series(filters []query.Filter, start, end time.Time) ([]map[str
 
 // IndexStats returns approximate counts of streams, chunks, entries, and bytes
 // for the given filter and time range.
-func (e *Engine) IndexStats(filter query.Filter, start, end time.Time) (*Stats, error) {
+func (e *Engine) IndexStats(filter any, start, end time.Time) (*Stats, error) {
 	stats := &Stats{}
 	streams := make(map[string]struct{})
 
 	e.forEachEntry(start, end, func(entry *journal.Entry) {
-		if !filter.Match(*entry) {
-			return
-		}
 		stats.Entries++
 		stats.Bytes += int64(len(entry.Message()))
 		streams[labelSetKey(entry.Fields, e.blacklist)] = struct{}{}

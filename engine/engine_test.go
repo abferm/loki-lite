@@ -9,27 +9,7 @@ import (
 	"time"
 
 	"github.com/abferm/loki-lite/journal"
-	"github.com/abferm/loki-lite/query"
 )
-
-// matchAll is a filter that matches every entry.
-type matchAll struct{}
-
-func (matchAll) Match(e journal.Entry) bool { return true }
-
-// matchNone is a filter that matches no entries.
-type matchNone struct{}
-
-func (matchNone) Match(e journal.Entry) bool { return false }
-
-// matchField returns a filter that matches entries where key == value.
-type matchField struct {
-	key, value string
-}
-
-func (m matchField) Match(e journal.Entry) bool {
-	return e.Fields[m.key] == m.value
-}
 
 type testEntry struct {
 	seqnum   uint64
@@ -270,7 +250,7 @@ func TestSeriesMatchAll(t *testing.T) {
 
 	eng := New(j, nil)
 
-	result, err := eng.Series([]query.Filter{matchAll{}}, time.Unix(0, 0), time.Unix(10, 0))
+	result, err := eng.Series([]any{"all"}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,29 +265,6 @@ func TestSeriesMatchAll(t *testing.T) {
 	}
 	if !keys["sshd"] || !keys["nginx"] {
 		t.Fatalf("expected sshd and nginx, got %v", keys)
-	}
-}
-
-func TestSeriesMatchNone(t *testing.T) {
-	dir := t.TempDir()
-	writeTestJournal(t, dir, "test.journal", []testEntry{
-		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
-	})
-
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, nil)
-
-	result, err := eng.Series([]query.Filter{matchNone{}}, time.Unix(0, 0), time.Unix(10, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result) != 0 {
-		t.Fatalf("expected 0 label sets, got %d", len(result))
 	}
 }
 
@@ -328,7 +285,7 @@ func TestSeriesTimeRange(t *testing.T) {
 	eng := New(j, nil)
 
 	// Query 2s to 6s — should match only job=b.
-	result, err := eng.Series([]query.Filter{matchAll{}}, time.Unix(2, 0), time.Unix(6, 0))
+	result, err := eng.Series([]any{"all"}, time.Unix(2, 0), time.Unix(6, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,39 +312,13 @@ func TestSeriesDeduplication(t *testing.T) {
 
 	eng := New(j, []string{"MESSAGE"})
 
-	result, err := eng.Series([]query.Filter{matchAll{}}, time.Unix(0, 0), time.Unix(10, 0))
+	result, err := eng.Series([]any{"all"}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Both entries have the same label set {job: sshd} after excluding MESSAGE — should dedup to 1.
 	if len(result) != 1 {
 		t.Fatalf("expected 1 label set after dedup, got %d: %v", len(result), result)
-	}
-}
-
-func TestSeriesFilterByField(t *testing.T) {
-	dir := t.TempDir()
-	writeTestJournal(t, dir, "test.journal", []testEntry{
-		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "PRIORITY": "4"}},
-		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "sshd", "PRIORITY": "6"}},
-		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "nginx", "PRIORITY": "4"}},
-	})
-
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, nil)
-
-	// Filter to PRIORITY=4 only.
-	result, err := eng.Series([]query.Filter{matchField{key: "PRIORITY", value: "4"}}, time.Unix(0, 0), time.Unix(10, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result) != 2 {
-		t.Fatalf("expected 2 label sets, got %d: %v", len(result), result)
 	}
 }
 
@@ -406,7 +337,7 @@ func TestIndexStatsMatchAll(t *testing.T) {
 
 	eng := New(j, nil)
 
-	stats, err := eng.IndexStats(matchAll{}, time.Unix(0, 0), time.Unix(10, 0))
+	stats, err := eng.IndexStats("all", time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,35 +352,6 @@ func TestIndexStatsMatchAll(t *testing.T) {
 	}
 	if stats.Chunks != 1 {
 		t.Errorf("expected 1 chunk (1 file), got %d", stats.Chunks)
-	}
-}
-
-func TestIndexStatsMatchNone(t *testing.T) {
-	dir := t.TempDir()
-	writeTestJournal(t, dir, "test.journal", []testEntry{
-		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
-	})
-
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, nil)
-
-	stats, err := eng.IndexStats(matchNone{}, time.Unix(0, 0), time.Unix(10, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats.Entries != 0 {
-		t.Errorf("expected 0 entries, got %d", stats.Entries)
-	}
-	if stats.Streams != 0 {
-		t.Errorf("expected 0 streams, got %d", stats.Streams)
-	}
-	if stats.Bytes != 0 {
-		t.Errorf("expected 0 bytes, got %d", stats.Bytes)
 	}
 }
 
@@ -470,7 +372,7 @@ func TestIndexStatsTimeRange(t *testing.T) {
 	eng := New(j, nil)
 
 	// Query 2s to 6s — only entry at 5s.
-	stats, err := eng.IndexStats(matchAll{}, time.Unix(2, 0), time.Unix(6, 0))
+	stats, err := eng.IndexStats("all", time.Unix(2, 0), time.Unix(6, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,34 +381,6 @@ func TestIndexStatsTimeRange(t *testing.T) {
 	}
 	if stats.Bytes != 2 {
 		t.Errorf("expected 2 bytes (yy), got %d", stats.Bytes)
-	}
-}
-
-func TestIndexStatsFilterByField(t *testing.T) {
-	dir := t.TempDir()
-	writeTestJournal(t, dir, "test.journal", []testEntry{
-		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "PRIORITY": "4", "MESSAGE": "a"}},
-		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "sshd", "PRIORITY": "6", "MESSAGE": "b"}},
-		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "nginx", "PRIORITY": "4", "MESSAGE": "c"}},
-	})
-
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, nil)
-
-	stats, err := eng.IndexStats(matchField{key: "PRIORITY", value: "4"}, time.Unix(0, 0), time.Unix(10, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats.Entries != 2 {
-		t.Errorf("expected 2 entries, got %d", stats.Entries)
-	}
-	if stats.Streams != 2 {
-		t.Errorf("expected 2 streams, got %d", stats.Streams)
 	}
 }
 
@@ -525,7 +399,7 @@ func TestIndexStatsDeduplicatesStreams(t *testing.T) {
 
 	eng := New(j, []string{"MESSAGE"})
 
-	stats, err := eng.IndexStats(matchAll{}, time.Unix(0, 0), time.Unix(10, 0))
+	stats, err := eng.IndexStats("all", time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
