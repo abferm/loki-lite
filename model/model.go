@@ -4,8 +4,8 @@
 package model
 
 import (
-	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/abferm/loki-lite/journal"
@@ -24,14 +24,23 @@ func NewSchema(labelNames []string) Schema {
 	return Schema{Labels: unique(labelNames)}
 }
 
-// LabelNames returns the configured label field names.
+// LabelNames returns the configured label field names, lowercased to match
+// Loki conventions.
 func (s Schema) LabelNames() []string {
-	return append([]string(nil), s.Labels...)
+	out := make([]string, len(s.Labels))
+	for i, l := range s.Labels {
+		out[i] = strings.ToLower(l)
+	}
+	return out
 }
 
-// IsLabel reports whether name is one of the configured label fields.
+// IsLabel reports whether name matches one of the configured label fields,
+// using case-insensitive comparison.
 func (s Schema) IsLabel(name string) bool {
-	return slices.Contains(s.Labels, name)
+	lower := strings.ToLower(name)
+	return slices.ContainsFunc(s.Labels, func(l string) bool {
+		return strings.ToLower(l) == lower
+	})
 }
 
 // JustLabels returns the subset of fieldKeys that are configured label fields,
@@ -51,12 +60,13 @@ func (s Schema) JustLabels(fieldKeys []string) []string {
 }
 
 // StreamLabelsMap extracts the configured label fields from fields and returns
-// them as a plain map. Fields not present in the input are omitted.
+// them as a plain map with lowercased keys. Fields not present in the input
+// are omitted.
 func (s Schema) StreamLabelsMap(fields map[string]string) map[string]string {
 	m := make(map[string]string, len(s.Labels))
 	for _, name := range s.Labels {
 		if v, ok := fields[name]; ok {
-			m[name] = v
+			m[strings.ToLower(name)] = v
 		}
 	}
 	return m
@@ -68,13 +78,20 @@ func (s Schema) StreamLabels(fields map[string]string) labels.Labels {
 }
 
 // StructuredMetadataMap returns all fields that are NOT configured labels and
-// NOT MESSAGE, as a plain map.
+// NOT MESSAGE, as a plain map with lowercased keys.
 func (s Schema) StructuredMetadataMap(fields map[string]string) map[string]string {
-	m := maps.Clone(fields)
+	labelSet := make(map[string]struct{}, len(s.Labels))
 	for _, l := range s.Labels {
-		delete(m, l)
+		labelSet[strings.ToLower(l)] = struct{}{}
 	}
-	delete(m, "MESSAGE")
+
+	m := make(map[string]string, len(fields))
+	for k, v := range fields {
+		lower := strings.ToLower(k)
+		if _, isLabel := labelSet[lower]; !isLabel && k != "MESSAGE" {
+			m[lower] = v
+		}
+	}
 	return m
 }
 

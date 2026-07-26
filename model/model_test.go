@@ -48,7 +48,7 @@ func TestSchemaStructuredMetadata(t *testing.T) {
 	}
 
 	got := schema.StructuredMetadata(fields)
-	want := labels.FromStrings("PRIORITY", "4", "_PID", "1234")
+	want := labels.FromStrings("priority", "4", "_pid", "1234")
 	if !labels.Equal(got, want) {
 		t.Errorf("StructuredMetadata = %v, want %v", got, want)
 	}
@@ -69,8 +69,8 @@ func TestSchemaStructuredMetadataExcludesMessage(t *testing.T) {
 func TestSchemaLabelNames(t *testing.T) {
 	schema := Schema{Labels: []string{"job", "PRIORITY"}}
 	got := schema.LabelNames()
-	if len(got) != 2 || got[0] != "job" || got[1] != "PRIORITY" {
-		t.Errorf("LabelNames = %v, want [job PRIORITY]", got)
+	if len(got) != 2 || got[0] != "job" || got[1] != "priority" {
+		t.Errorf("LabelNames = %v, want [job priority]", got)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestStructuredMetadataMap(t *testing.T) {
 		"PRIORITY": "4",
 	}
 	got := schema.StructuredMetadataMap(fields)
-	want := map[string]string{"PRIORITY": "4"}
+	want := map[string]string{"priority": "4"}
 	if len(got) != len(want) {
 		t.Fatalf("StructuredMetadataMap = %v, want %v", got, want)
 	}
@@ -176,8 +176,22 @@ func TestSchemaEntry(t *testing.T) {
 		t.Errorf("StreamLabels = %v, want %v", got.StreamLabels, wantStream)
 	}
 
-	wantMeta := labels.FromStrings("PRIORITY", "4")
+	wantMeta := labels.FromStrings("priority", "4")
 	if !labels.Equal(got.StructuredMetadata, wantMeta) {
 		t.Errorf("StructuredMetadata = %v, want %v", got.StructuredMetadata, wantMeta)
+	}
+}
+
+func TestSchemaStreamLabelsLowercases(t *testing.T) {
+	schema := Schema{Labels: []string{"PRIORITY", "_SYSTEMD_UNIT"}}
+	fields := map[string]string{
+		"PRIORITY":        "4",
+		"_SYSTEMD_UNIT":   "sshd.service",
+	}
+
+	got := schema.StreamLabels(fields)
+	want := labels.FromStrings("priority", "4", "_systemd_unit", "sshd.service")
+	if !labels.Equal(got, want) {
+		t.Errorf("StreamLabels = %v, want %v", got, want)
 	}
 }

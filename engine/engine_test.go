@@ -433,7 +433,7 @@ func TestLabels(t *testing.T) {
 	}
 	sort.Strings(labels)
 
-	expected := []string{"PRIORITY", "job"}
+	expected := []string{"job", "priority"}
 	if len(labels) != len(expected) {
 		t.Fatalf("expected %v, got %v", expected, labels)
 	}
