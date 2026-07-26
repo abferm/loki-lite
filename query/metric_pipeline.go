@@ -1,22 +1,22 @@
 package query
 
 import (
+	"github.com/abferm/loki-lite/model"
 	"github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
-// MetricPipeline processes journal entries through a parsed LogQL metric query,
+// MetricPipeline processes log entries through a parsed LogQL metric query,
 // extracting numeric samples from matching entries.
 type MetricPipeline struct {
 	expr       syntax.SampleExpr
 	selector   syntax.LogSelectorExpr
 	extractors []log.SampleExtractor
-	schema     Schema
 }
 
 // MetricQL parses a LogQL metric query and returns a MetricPipeline.
-func (b *Builder) MetricQL(query string) (*MetricPipeline, error) {
+func MetricQL(query string) (*MetricPipeline, error) {
 	expr, err := syntax.ParseSampleExpr(query)
 	if err != nil {
 		return nil, err
@@ -36,14 +36,13 @@ func (b *Builder) MetricQL(query string) (*MetricPipeline, error) {
 		expr:       expr,
 		selector:   selector,
 		extractors: extractors,
-		schema:     b.schema,
 	}, nil
 }
 
-// Process feeds a single journal entry through the metric pipeline and returns
+// Process feeds a single log entry through the metric pipeline and returns
 // the extracted sample values and whether the entry matched the selector.
 // Each extractor produces its own set of samples; results are concatenated.
-func (mp *MetricPipeline) Process(entry Entry) ([]float64, bool) {
+func (mp *MetricPipeline) Process(entry model.Entry) ([]float64, bool) {
 	matchers := mp.selector.Matchers()
 	if !matchersMatch(entry.StreamLabels, matchers) {
 		return nil, false

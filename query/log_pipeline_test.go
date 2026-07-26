@@ -4,14 +4,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/abferm/loki-lite/model"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
 func TestLogQLSimpleSelector(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	lp, err := builder.LogQL(`{job="sshd"}`)
+	lp, err := LogQL(`{job="sshd"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,15 +24,12 @@ func TestLogQLSimpleSelector(t *testing.T) {
 }
 
 func TestLogQLWithLineFilter(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	lp, err := builder.LogQL(`{job="sshd"} |= "error"`)
+	lp, err := LogQL(`{job="sshd"} |= "error"`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	entry := Entry{
+	entry := model.Entry{
 		Timestamp:    time.Unix(0, 0),
 		Line:         "error: connection refused",
 		StreamLabels: labels.FromStrings("job", "sshd"),
@@ -50,15 +45,12 @@ func TestLogQLWithLineFilter(t *testing.T) {
 }
 
 func TestLogQLNoMatch(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	lp, err := builder.LogQL(`{job="nginx"}`)
+	lp, err := LogQL(`{job="nginx"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	entry := Entry{
+	entry := model.Entry{
 		Timestamp:    time.Unix(0, 0),
 		Line:         "hello",
 		StreamLabels: labels.FromStrings("job", "sshd"),
@@ -71,15 +63,12 @@ func TestLogQLNoMatch(t *testing.T) {
 }
 
 func TestLogQLLineFilterNoMatch(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	lp, err := builder.LogQL(`{job="sshd"} |= "error"`)
+	lp, err := LogQL(`{job="sshd"} |= "error"`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	entry := Entry{
+	entry := model.Entry{
 		Timestamp:    time.Unix(0, 0),
 		Line:         "connection established",
 		StreamLabels: labels.FromStrings("job", "sshd"),
@@ -92,25 +81,19 @@ func TestLogQLLineFilterNoMatch(t *testing.T) {
 }
 
 func TestLogQLInvalidQuery(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	_, err := builder.LogQL(`{job=`)
+	_, err := LogQL(`{job=`)
 	if err == nil {
 		t.Fatal("expected error for invalid query")
 	}
 }
 
 func TestLogQLPreservesStructuredMetadata(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	lp, err := builder.LogQL(`{job="sshd"}`)
+	lp, err := LogQL(`{job="sshd"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	entry := Entry{
+	entry := model.Entry{
 		Timestamp:          time.Unix(0, 0),
 		Line:               "hello",
 		StreamLabels:       labels.FromStrings("job", "sshd"),

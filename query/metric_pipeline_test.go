@@ -4,14 +4,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/abferm/loki-lite/model"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
 func TestMetricQLCountOverTime(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	mp, err := builder.MetricQL(`count_over_time({job="sshd"}[5m])`)
+	mp, err := MetricQL(`count_over_time({job="sshd"}[5m])`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,15 +24,12 @@ func TestMetricQLCountOverTime(t *testing.T) {
 }
 
 func TestMetricQLProcessMatch(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	mp, err := builder.MetricQL(`count_over_time({job="sshd"}[5m])`)
+	mp, err := MetricQL(`count_over_time({job="sshd"}[5m])`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	entry := Entry{
+	entry := model.Entry{
 		Timestamp:    time.Unix(0, 0),
 		Line:         "hello",
 		StreamLabels: labels.FromStrings("job", "sshd"),
@@ -53,15 +48,12 @@ func TestMetricQLProcessMatch(t *testing.T) {
 }
 
 func TestMetricQLProcessNoMatch(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	mp, err := builder.MetricQL(`count_over_time({job="nginx"}[5m])`)
+	mp, err := MetricQL(`count_over_time({job="nginx"}[5m])`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	entry := Entry{
+	entry := model.Entry{
 		Timestamp:    time.Unix(0, 0),
 		Line:         "hello",
 		StreamLabels: labels.FromStrings("job", "sshd"),
@@ -74,25 +66,19 @@ func TestMetricQLProcessNoMatch(t *testing.T) {
 }
 
 func TestMetricQLInvalidQuery(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	_, err := builder.MetricQL(`not_a_metric({job="sshd"}[5m])`)
+	_, err := MetricQL(`not_a_metric({job="sshd"}[5m])`)
 	if err == nil {
 		t.Fatal("expected error for invalid metric query")
 	}
 }
 
 func TestMetricQLBytesOverTime(t *testing.T) {
-	schema := Schema{Labels: []string{"job"}}
-	builder := NewBuilder(schema)
-
-	mp, err := builder.MetricQL(`bytes_over_time({job="sshd"}[5m])`)
+	mp, err := MetricQL(`bytes_over_time({job="sshd"}[5m])`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	entry := Entry{
+	entry := model.Entry{
 		Timestamp:    time.Unix(0, 0),
 		Line:         "hello",
 		StreamLabels: labels.FromStrings("job", "sshd"),
