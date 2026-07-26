@@ -66,6 +66,91 @@ func TestSchemaStructuredMetadataExcludesMessage(t *testing.T) {
 	}
 }
 
+func TestSchemaLabelNames(t *testing.T) {
+	schema := Schema{Labels: []string{"job", "PRIORITY"}}
+	got := schema.LabelNames()
+	if len(got) != 2 || got[0] != "job" || got[1] != "PRIORITY" {
+		t.Errorf("LabelNames = %v, want [job PRIORITY]", got)
+	}
+}
+
+func TestSchemaLabelNamesEmpty(t *testing.T) {
+	schema := Schema{}
+	got := schema.LabelNames()
+	if len(got) != 0 {
+		t.Errorf("LabelNames = %v, want []", got)
+	}
+}
+
+func TestSchemaIsLabel(t *testing.T) {
+	schema := Schema{Labels: []string{"job", "PRIORITY"}}
+	if !schema.IsLabel("job") {
+		t.Error("IsLabel(job) = false, want true")
+	}
+	if schema.IsLabel("MESSAGE") {
+		t.Error("IsLabel(MESSAGE) = true, want false")
+	}
+}
+
+func TestNewSchemaDeduplicates(t *testing.T) {
+	schema := NewSchema([]string{"job", "job", "PRIORITY"})
+	if len(schema.Labels) != 2 {
+		t.Errorf("expected 2 labels, got %d: %v", len(schema.Labels), schema.Labels)
+	}
+}
+
+func TestJustLabels(t *testing.T) {
+	schema := Schema{Labels: []string{"job", "PRIORITY", "instance"}}
+	got := schema.JustLabels([]string{"MESSAGE", "job", "instance"})
+	want := []string{"job", "instance"}
+	if len(got) != len(want) {
+		t.Fatalf("JustLabels = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("JustLabels = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestStreamLabelsMap(t *testing.T) {
+	schema := Schema{Labels: []string{"job", "instance"}}
+	fields := map[string]string{
+		"job":      "sshd",
+		"instance": "host1",
+		"MESSAGE":  "hello",
+	}
+	got := schema.StreamLabelsMap(fields)
+	want := map[string]string{"job": "sshd", "instance": "host1"}
+	if len(got) != len(want) {
+		t.Fatalf("StreamLabelsMap = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("StreamLabelsMap[%s] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+func TestStructuredMetadataMap(t *testing.T) {
+	schema := Schema{Labels: []string{"job"}}
+	fields := map[string]string{
+		"job":      "sshd",
+		"MESSAGE":  "hello",
+		"PRIORITY": "4",
+	}
+	got := schema.StructuredMetadataMap(fields)
+	want := map[string]string{"PRIORITY": "4"}
+	if len(got) != len(want) {
+		t.Fatalf("StructuredMetadataMap = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("StructuredMetadataMap[%s] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
 func TestSchemaEntry(t *testing.T) {
 	schema := Schema{Labels: []string{"job"}}
 	entry := journal.Entry{
