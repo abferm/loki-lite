@@ -50,6 +50,28 @@ func (h *Handler) registerRoutes() {
 	h.mux.HandleFunc("GET /loki/api/v1/index/stats", h.handleIndexStats)
 	h.mux.HandleFunc("GET /loki/api/v1/format_query", h.handleFormatQuery)
 	h.mux.HandleFunc("GET /ready", h.handleReady)
+
+	// Stubs — not yet implemented.
+	h.mux.HandleFunc("GET /loki/api/v1/tail", h.handleNotImplemented)
+	h.mux.HandleFunc("GET /loki/api/v1/patterns", h.handleNotImplemented)
+	h.mux.HandleFunc("GET /loki/api/v1/index/volume", h.handleNotImplemented)
+	h.mux.HandleFunc("GET /loki/api/v1/index/volume_range", h.handleNotImplemented)
+	h.mux.HandleFunc("GET /loki/api/v1/detected_fields", h.handleNotImplemented)
+	h.mux.HandleFunc("GET /loki/api/v1/rules", h.handleNotImplemented)
+	h.mux.HandleFunc("POST /loki/api/v1/rules", h.handleNotImplemented)
+	h.mux.HandleFunc("DELETE /loki/api/v1/rules/{namespace}/{groupName}", h.handleNotImplemented)
+
+	// Stubs — read-only / ingest / flush / delete.
+	h.mux.HandleFunc("POST /loki/api/v1/push", h.handleReadOnly)
+	h.mux.HandleFunc("POST /otlp/v1/logs", h.handleReadOnly)
+	h.mux.HandleFunc("POST /loki/api/v1/delete", h.handleReadOnly)
+	h.mux.HandleFunc("GET /flush", h.handleReadOnly)
+	h.mux.HandleFunc("POST /flush", h.handleReadOnly)
+	h.mux.HandleFunc("GET /shutdown", h.handleReadOnly)
+	h.mux.HandleFunc("POST /shutdown", h.handleReadOnly)
+	h.mux.HandleFunc("GET /ring", h.handleReadOnly)
+	h.mux.HandleFunc("POST /ingester/flush", h.handleReadOnly)
+	h.mux.HandleFunc("POST /ingester/shutdown", h.handleReadOnly)
 }
 
 // handleQueryRange handles GET /loki/api/v1/query_range.
@@ -288,6 +310,22 @@ func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "ready")
+}
+
+// handleNotImplemented handles endpoints that may be added in the future.
+//
+// Returns 501 Not Implemented.
+func (h *Handler) handleNotImplemented(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotImplemented, "endpoint not yet implemented in Loki Lite")
+}
+
+// handleReadOnly handles endpoints that are not applicable to a query-only
+// frontend backed by journald.
+//
+// Returns 501 Not Implemented with a message explaining Loki Lite is a
+// read-only frontend for journald.
+func (h *Handler) handleReadOnly(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotImplemented, "Loki Lite is a read-only query frontend for journald and does not support ingestion, flushing, or deletion")
 }
 
 // formatQueryResponse is the JSON response for /loki/api/v1/format_query.

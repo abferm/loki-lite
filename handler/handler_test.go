@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -821,5 +822,94 @@ func TestParseTimestamp(t *testing.T) {
 	_, err = parseTimestamp("not-a-timestamp", zero)
 	if err == nil {
 		t.Fatal("expected error for invalid timestamp")
+	}
+}
+
+func TestNotImplemented(t *testing.T) {
+	h, _ := setupTestHandler(t, []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+	})
+
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/loki/api/v1/tail"},
+		{"GET", "/loki/api/v1/patterns"},
+		{"GET", "/loki/api/v1/index/volume"},
+		{"GET", "/loki/api/v1/index/volume_range"},
+		{"GET", "/loki/api/v1/detected_fields"},
+		{"GET", "/loki/api/v1/rules"},
+		{"POST", "/loki/api/v1/rules"},
+		{"DELETE", "/loki/api/v1/rules/fake/group"},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.path, func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			w := httptest.NewRecorder()
+			h.Handler().ServeHTTP(w, req)
+
+			if w.Code != 501 {
+				t.Errorf("%s %s: expected 501, got %d", ep.method, ep.path, w.Code)
+			}
+			var resp struct {
+				Status  string `json:"status"`
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.Status != "error" {
+				t.Errorf("expected status error, got %q", resp.Status)
+			}
+		})
+	}
+}
+
+func TestReadOnly(t *testing.T) {
+	h, _ := setupTestHandler(t, []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+	})
+
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/loki/api/v1/push"},
+		{"POST", "/otlp/v1/logs"},
+		{"POST", "/loki/api/v1/delete"},
+		{"GET", "/flush"},
+		{"POST", "/flush"},
+		{"GET", "/shutdown"},
+		{"POST", "/shutdown"},
+		{"GET", "/ring"},
+		{"POST", "/ingester/flush"},
+		{"POST", "/ingester/shutdown"},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.path, func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			w := httptest.NewRecorder()
+			h.Handler().ServeHTTP(w, req)
+
+			if w.Code != 501 {
+				t.Errorf("%s %s: expected 501, got %d", ep.method, ep.path, w.Code)
+			}
+			var resp struct {
+				Status  string `json:"status"`
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.Status != "error" {
+				t.Errorf("expected status error, got %q", resp.Status)
+			}
+			if !strings.Contains(resp.Message, "read-only") {
+				t.Errorf("expected read-only message, got %q", resp.Message)
+			}
+		})
 	}
 }
