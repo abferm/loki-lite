@@ -478,6 +478,35 @@ func (f *File) NextEntry() (*Entry, bool) {
 	return nil, false
 }
 
+// Previous moves the cursor to the entry just before the current one by
+// sequence number. Uses the file header to check if the previous seqnum is
+// in range, then calls Seek(target). If there is a gap (Seek lands past the
+// target), decrements and retries until a match is found or the head seqnum
+// is reached.
+//
+// Returns false if there is no previous entry (already at head) or if no entry
+// has been read yet. O(n) per Seek call — acceptable for bounded backward
+// iteration but not for repeated random access.
+func (f *File) Previous() bool {
+	if f.entry == nil {
+		return false
+	}
+
+	currentSeqnum := f.entry.Seqnum()
+	if currentSeqnum <= f.header.HeadEntrySeqnum {
+		return false
+	}
+
+	target := currentSeqnum - 1
+	for target >= f.header.HeadEntrySeqnum {
+		if f.Seek(target) && f.entry != nil && f.entry.Seqnum() == target {
+			return true
+		}
+		target--
+	}
+	return false
+}
+
 // SeekHead resets the read position to the first entry in the file. The next
 // call to Next() will return the oldest entry.
 func (f *File) SeekHead() {

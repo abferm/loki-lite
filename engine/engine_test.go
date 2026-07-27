@@ -10,6 +10,8 @@ import (
 
 	"github.com/abferm/loki-lite/journal"
 	"github.com/abferm/loki-lite/model"
+	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/prometheus/prometheus/model/labels"
 )
 
 type testEntry struct {
@@ -251,7 +253,7 @@ func TestSeriesMatchAll(t *testing.T) {
 
 	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
-	result, err := eng.Series([]any{"all"}, time.Unix(0, 0), time.Unix(10, 0))
+	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +288,7 @@ func TestSeriesTimeRange(t *testing.T) {
 	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
 	// Query 2s to 6s — should match only job=b.
-	result, err := eng.Series([]any{"all"}, time.Unix(2, 0), time.Unix(6, 0))
+	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(2, 0), time.Unix(6, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +315,7 @@ func TestSeriesDeduplication(t *testing.T) {
 
 	eng := New(j, &model.Schema{Labels: []string{"job"}})
 
-	result, err := eng.Series([]any{"all"}, time.Unix(0, 0), time.Unix(10, 0))
+	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +350,7 @@ func TestIndexStatsMatchAll(t *testing.T) {
 	if stats.Streams != 2 {
 		t.Errorf("expected 2 streams, got %d", stats.Streams)
 	}
-	if stats.Bytes != int64(len("hello")+len("world!")) {
+	if stats.Bytes != uint64(len("hello")+len("world!")) {
 		t.Errorf("expected %d bytes, got %d", len("hello")+len("world!"), stats.Bytes)
 	}
 	if stats.Chunks != 1 {
@@ -493,5 +495,553 @@ func TestLabelValuesExcluded(t *testing.T) {
 	_, err = eng.LabelValues("MESSAGE")
 	if err != ErrLabelExcluded {
 		t.Fatalf("expected ErrLabelExcluded, got %v", err)
+	}
+}
+
+func TestLogQueryRangeBasic(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "nginx", "MESSAGE": "world"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	if result[0].Labels["job"] != "sshd" {
+		t.Fatalf("expected job=sshd, got %v", result[0].Labels)
+	}
+	if len(result[0].Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result[0].Entries))
+	}
+	if result[0].Entries[0].Line != "hello" {
+		t.Fatalf("expected hello, got %v", result[0].Entries[0].Line)
+	}
+}
+
+func TestLogQueryRangeAllStreams(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "one"}},
+		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "nginx", "MESSAGE": "two"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.LogQueryRange(`{job=~".+"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 streams, got %d", len(result))
+	}
+}
+
+func TestLogQueryRangeTimeFiltering(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "early"}},
+		{seqnum: 2, realtime: 5000000, fields: map[string]string{"job": "sshd", "MESSAGE": "middle"}},
+		{seqnum: 3, realtime: 10000000, fields: map[string]string{"job": "sshd", "MESSAGE": "late"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(2, 0), time.Unix(6, 0), 0, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	if len(result[0].Entries) != 1 {
+		t.Fatalf("expected 1 entry in range, got %d", len(result[0].Entries))
+	}
+	if result[0].Entries[0].Line != "middle" {
+		t.Fatalf("expected middle, got %v", result[0].Entries[0].Line)
+	}
+}
+
+func TestLogQueryRangeLimit(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "a"}},
+		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "sshd", "MESSAGE": "b"}},
+		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "sshd", "MESSAGE": "c"}},
+		{seqnum: 4, realtime: 4000000, fields: map[string]string{"job": "sshd", "MESSAGE": "d"}},
+		{seqnum: 5, realtime: 5000000, fields: map[string]string{"job": "sshd", "MESSAGE": "e"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 3, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, s := range result {
+		total += len(s.Entries)
+	}
+	if total != 3 {
+		t.Fatalf("expected 3 total entries with limit, got %d", total)
+	}
+}
+
+func TestLogQueryRangeDirectionBackward(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "first"}},
+		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "sshd", "MESSAGE": "second"}},
+		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "sshd", "MESSAGE": "third"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 2, logproto.BACKWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	if len(result[0].Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result[0].Entries))
+	}
+	if result[0].Entries[0].Line != "third" {
+		t.Fatalf("expected third (newest), got %v", result[0].Entries[0].Line)
+	}
+	if result[0].Entries[1].Line != "second" {
+		t.Fatalf("expected second, got %v", result[0].Entries[1].Line)
+	}
+}
+
+func TestLogQueryRangeDirectionForward(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "first"}},
+		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "sshd", "MESSAGE": "second"}},
+		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "sshd", "MESSAGE": "third"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 2, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	if len(result[0].Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result[0].Entries))
+	}
+	if result[0].Entries[0].Line != "first" {
+		t.Fatalf("expected first (oldest), got %v", result[0].Entries[0].Line)
+	}
+	if result[0].Entries[1].Line != "second" {
+		t.Fatalf("expected second, got %v", result[0].Entries[1].Line)
+	}
+}
+
+func TestLogQueryRangeNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.LogQueryRange(`{job="nginx"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("expected 0 streams, got %d", len(result))
+	}
+}
+
+func TestLogQueryRangeLineFilter(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "login accepted"}},
+		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "sshd", "MESSAGE": "connection refused"}},
+		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "sshd", "MESSAGE": "login failed"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.LogQueryRange(`{job="sshd"} |= "login"`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	if len(result[0].Entries) != 2 {
+		t.Fatalf("expected 2 entries matching line filter, got %d", len(result[0].Entries))
+	}
+}
+
+func TestLogQueryRangeInvalidQuery(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	_, err = eng.LogQueryRange(`not a valid query`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
+	if err == nil {
+		t.Fatal("expected error for invalid query")
+	}
+}
+
+func TestMetricQueryRangeCountOverTime(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "one"}},   // 1s
+		{seqnum: 2, realtime: 2_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "two"}},   // 2s
+		{seqnum: 3, realtime: 3_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "three"}}, // 3s
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	// 1s steps over 0-3s → 4 data points
+	result, err := eng.MetricQueryRange(`count_over_time({job="sshd"}[1s])`, time.Unix(0, 0), time.Unix(4, 0), time.Second, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	if result[0].Metric["job"] != "sshd" {
+		t.Fatalf("expected job=sshd, got %v", result[0].Metric)
+	}
+	// Each 1s window has 1 entry
+	if len(result[0].Values) != 3 {
+		t.Fatalf("expected 3 sample pairs, got %d", len(result[0].Values))
+	}
+	for _, v := range result[0].Values {
+		if float64(v.Value) != 1.0 {
+			t.Errorf("expected value 1.0 at %v, got %v", v.Timestamp.Time(), v.Value)
+		}
+	}
+}
+
+func TestMetricQueryRangeBytesOverTime(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hi"}},     // 2 bytes
+		{seqnum: 2, realtime: 1_500_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},  // 5 bytes
+		{seqnum: 3, realtime: 5_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "world"}},  // 5 bytes
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	// 5s steps over 0-10s → 2 data points
+	result, err := eng.MetricQueryRange(`bytes_over_time({job="sshd"}[5s])`, time.Unix(0, 0), time.Unix(10, 0), 5*time.Second, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	// First window [0,5): 2+5=7 bytes, Second window [5,10): 5 bytes
+	if len(result[0].Values) != 2 {
+		t.Fatalf("expected 2 sample pairs, got %d", len(result[0].Values))
+	}
+	if float64(result[0].Values[0].Value) != 7.0 {
+		t.Errorf("expected 7.0 at 0s, got %v", result[0].Values[0].Value)
+	}
+	if float64(result[0].Values[1].Value) != 5.0 {
+		t.Errorf("expected 5.0 at 5s, got %v", result[0].Values[1].Value)
+	}
+}
+
+func TestMetricQueryRangeMultipleStreams(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "one"}},
+		{seqnum: 2, realtime: 1_000_000, fields: map[string]string{"job": "nginx", "MESSAGE": "two"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.MetricQueryRange(`count_over_time({job=~".+"}[1s])`, time.Unix(0, 0), time.Unix(2, 0), time.Second, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 streams, got %d", len(result))
+	}
+}
+
+func TestMetricQueryRangeNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.MetricQueryRange(`count_over_time({job="nginx"}[1s])`, time.Unix(0, 0), time.Unix(10, 0), time.Second, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("expected 0 streams, got %d", len(result))
+	}
+}
+
+func TestMetricQueryRangeInvalidQuery(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	_, err = eng.MetricQueryRange(`not a valid query`, time.Unix(0, 0), time.Unix(10, 0), time.Second, logproto.FORWARD)
+	if err == nil {
+		t.Fatal("expected error for invalid query")
+	}
+}
+
+func TestMetricQueryRangeDirectionBackward(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "one"}},
+		{seqnum: 2, realtime: 2_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "two"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	// Direction doesn't affect the output values, only iteration order.
+	result, err := eng.MetricQueryRange(`count_over_time({job="sshd"}[1s])`, time.Unix(0, 0), time.Unix(3, 0), time.Second, logproto.BACKWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	if len(result[0].Values) != 2 {
+		t.Fatalf("expected 2 sample pairs, got %d", len(result[0].Values))
+	}
+	for _, v := range result[0].Values {
+		if float64(v.Value) != 1.0 {
+			t.Errorf("expected value 1.0, got %v", v.Value)
+		}
+	}
+}
+
+func TestMetricQueryCountOverTime(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "one"}},   // 1s
+		{seqnum: 2, realtime: 2_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "two"}},   // 2s
+		{seqnum: 3, realtime: 3_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "three"}}, // 3s
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	// Instant query at ts=5s with [5s] range should count entries in [0,5s]
+	result, err := eng.MetricQuery(`count_over_time({job="sshd"}[5s])`, time.Unix(5, 0), logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(result))
+	}
+	if result[0].Metric["job"] != "sshd" {
+		t.Fatalf("expected job=sshd, got %v", result[0].Metric)
+	}
+	if float64(result[0].Value) != 3.0 {
+		t.Errorf("expected value 3.0, got %v", result[0].Value)
+	}
+}
+
+func TestMetricQueryBytesOverTime(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hi"}},     // 2 bytes
+		{seqnum: 2, realtime: 2_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},  // 5 bytes
+		{seqnum: 3, realtime: 5_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "world"}},  // 5 bytes
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	// Instant query at ts=3s with [3s] range → entries at 1s,2s → 2+5=7 bytes
+	result, err := eng.MetricQuery(`bytes_over_time({job="sshd"}[3s])`, time.Unix(3, 0), logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(result))
+	}
+	if float64(result[0].Value) != 7.0 {
+		t.Errorf("expected value 7.0, got %v", result[0].Value)
+	}
+
+	// Instant query at ts=5s with [3s] range → entries at 2s,5s → 5+5=10 bytes
+	result2, err := eng.MetricQuery(`bytes_over_time({job="sshd"}[3s])`, time.Unix(5, 0), logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result2) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(result2))
+	}
+	if float64(result2[0].Value) != 10.0 {
+		t.Errorf("expected value 10.0, got %v", result2[0].Value)
+	}
+}
+
+func TestMetricQueryNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	result, err := eng.MetricQuery(`count_over_time({job="nginx"}[5s])`, time.Unix(5, 0), logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("expected 0 samples, got %d", len(result))
+	}
+}
+
+func TestMetricQueryInvalidQuery(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
+	})
+
+	j, err := journal.OpenJournal(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	eng := New(j, &model.Schema{Labels: []string{"job"}})
+
+	_, err = eng.MetricQuery(`not a valid query`, time.Unix(5, 0), logproto.FORWARD)
+	if err == nil {
+		t.Fatal("expected error for invalid query")
 	}
 }

@@ -1,6 +1,8 @@
 package query
 
 import (
+	"time"
+
 	"github.com/abferm/loki-lite/model"
 	"github.com/grafana/loki/v3/pkg/logql/log"
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
@@ -75,6 +77,18 @@ func (mp *MetricPipeline) Process(entry model.Entry) ([]float64, bool) {
 // Matchers returns the stream selectors from the parsed metric query.
 func (mp *MetricPipeline) Matchers() []*labels.Matcher {
 	return mp.selector.Matchers()
+}
+
+// Range returns the range duration from the metric query's range selector
+// (e.g., the `5m` in `count_over_time({job="sshd"}[5m])`).
+// Returns 0 if the expression does not contain a range selector.
+func (mp *MetricPipeline) Range() time.Duration {
+	if ra, ok := mp.expr.(*syntax.RangeAggregationExpr); ok {
+		if ra.Left != nil {
+			return ra.Left.Interval
+		}
+	}
+	return 0
 }
 
 // matchersMatch checks if the given labels match all matchers.

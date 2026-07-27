@@ -312,6 +312,54 @@ func (j *Journal) Next() bool {
 	}
 }
 
+// Previous moves to the entry just before the current one in sequence-number
+// order. Uses containsSeqnum to check if the previous seqnum is in a file,
+// then delegates to File.Previous (which uses Seek). Handles cross-file gaps
+// by falling back to the file with the largest tail before the current seqnum.
+//
+// Returns false if there is no previous entry (at head of first file) or no
+// entry has been read yet. O(n) per call — see File.Previous for details.
+func (j *Journal) Previous() bool {
+	if j.entry == nil {
+		return false
+	}
+
+	prevSeqnum := j.entry.Seqnum() - 1
+	if prevSeqnum == 0 {
+		return false
+	}
+
+	// Fast path: prevSeqnum is within a file's range.
+	for _, f := range j.files {
+		if f.containsSeqnum(prevSeqnum) {
+			if f.Previous() {
+				j.entry = f.entry
+				return true
+			}
+			return false
+		}
+	}
+
+	// Slow path: cross-file gap. Find the file with the largest tail < currentSeqnum.
+	currentSeqnum := j.entry.Seqnum()
+	var bestFile *File
+	for _, f := range j.files {
+		if f.TailEntrySeqnum() < currentSeqnum {
+			if bestFile == nil || f.TailEntrySeqnum() > bestFile.TailEntrySeqnum() {
+				bestFile = f
+			}
+		}
+	}
+	if bestFile != nil {
+		bestFile.SeekTail()
+		if bestFile.entry != nil {
+			j.entry = bestFile.entry
+			return true
+		}
+	}
+	return false
+}
+
 func (j *Journal) cleanupDeletedFiles() {
 	for i := len(j.files) - 1; i >= 0; i-- {
 		if !j.files[i].Exists() {

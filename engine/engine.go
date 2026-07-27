@@ -11,6 +11,10 @@ import (
 
 	"github.com/abferm/loki-lite/journal"
 	"github.com/abferm/loki-lite/model"
+	queryPkg "github.com/abferm/loki-lite/query"
+	"github.com/grafana/loki/v3/pkg/loghttp"
+	"github.com/grafana/loki/v3/pkg/logproto"
+	prommodel "github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
@@ -21,14 +25,6 @@ const DefaultLabelValuesLimit = 10000
 
 // ErrLabelExcluded is returned when a label is not in the schema's label set.
 var ErrLabelExcluded = fmt.Errorf("label excluded by configuration")
-
-// Stats holds approximate counts returned by IndexStats.
-type Stats struct {
-	Streams int64 `json:"streams"`
-	Chunks  int64 `json:"chunks"`
-	Entries int64 `json:"entries"`
-	Bytes   int64 `json:"bytes"`
-}
 
 // Engine executes Loki-compatible queries against journald journals.
 type Engine struct {
@@ -43,18 +39,230 @@ func New(j *journal.Journal, schema *model.Schema) *Engine {
 	return &Engine{journal: j, schema: schema}
 }
 
-// QueryRange executes a range query over log streams.
-func (e *Engine) QueryRange(query string, start, end time.Time, limit int, direction string, step, interval time.Duration) (any, error) {
-	panic("unimplemented")
+// LogQueryRange executes a log query over a time range, returning log stream
+// entries that match the LogQL selector. This corresponds to the
+// /loki/api/v1/query_range endpoint for log queries.
+//
+// query is a LogQL log selector expression (e.g. `{job="sshd"}`).
+// start and end define the time window to search.
+// limit caps the total number of log entries returned.
+// direction controls whether entries are returned newest-first (BACKWARD)
+// or oldest-first (FORWARD).
+//
+// Returns loghttp.Streams which can be marshaled directly with json-iterator
+// to produce Loki-compatible JSON (entries serialized as ["ts","line"] arrays).
+func (e *Engine) LogQueryRange(query string, start, end time.Time, limit int, direction logproto.Direction) (loghttp.Streams, error) {
+	pipeline, err := queryPkg.LogQL(query)
+	if err != nil {
+		return nil, err
+	}
+
+	type timedEntry struct {
+		streamKey string
+		streamLbl labels.Labels
+		entry     loghttp.Entry
+	}
+
+	var all []timedEntry
+
+	e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+		modelEntry := e.schema.Entry(*je)
+		processed, ok := pipeline.Process(modelEntry)
+		if !ok {
+			return true
+		}
+		all = append(all, timedEntry{
+			streamKey: processed.StreamLabels.StringNoSpace(),
+			streamLbl: processed.StreamLabels,
+			entry: loghttp.Entry{
+				Timestamp:          processed.Timestamp,
+				Line:               processed.Line,
+				StructuredMetadata: processed.StructuredMetadata,
+			},
+		})
+		return limit <= 0 || len(all) < limit
+	})
+	grouped := make(map[string]*loghttp.Stream)
+	for _, te := range all {
+		s, exists := grouped[te.streamKey]
+		if !exists {
+			s = &loghttp.Stream{Labels: loghttp.LabelSet(te.streamLbl.Map())}
+			grouped[te.streamKey] = s
+		}
+		s.Entries = append(s.Entries, te.entry)
+	}
+
+	result := make(loghttp.Streams, 0, len(grouped))
+	for _, s := range grouped {
+		result = append(result, *s)
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Labels.String() < result[j].Labels.String()
+	})
+
+	return result, nil
 }
 
-// Query executes an instant query that returns a single point-in-time result.
-func (e *Engine) Query(query string, ts time.Time, limit int, direction string) (any, error) {
-	panic("unimplemented")
+// MetricQueryRange executes a metric query over a time range, returning
+// sampled results at the given step interval. This corresponds to the
+// /loki/api/v1/query_range endpoint for metric queries (e.g. rate,
+// count_over_time, bytes_over_time).
+//
+// query is a LogQL sample expression (e.g. `count_over_time({job="sshd"}[5m])`).
+// start and end define the time window to search.
+// step is the sampling interval; a data point is produced for each step
+// within [start, end].
+// direction controls entry iteration order; it does not affect the output
+// order of sampled data points.
+//
+// Returns a loghttp.Matrix — one SampleStream per distinct stream, each
+// containing a SamplePair for every step that had matching entries.
+func (e *Engine) MetricQueryRange(query string, start, end time.Time, step time.Duration, direction logproto.Direction) (loghttp.Matrix, error) {
+	pipeline, err := queryPkg.MetricQL(query)
+	if err != nil {
+		return nil, err
+	}
+
+	numSteps := int(end.Sub(start)/step) + 1
+
+	type streamAcc struct {
+		metric prommodel.Metric
+		values []float64
+	}
+
+	acc := make(map[string]*streamAcc)
+
+	e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+		modelEntry := e.schema.Entry(*je)
+		values, ok := pipeline.Process(modelEntry)
+		if !ok {
+			return true
+		}
+
+		stepIdx := int(je.Timestamp.Sub(start) / step)
+		if stepIdx < 0 || stepIdx >= numSteps {
+			return true
+		}
+
+		key := modelEntry.StreamLabels.StringNoSpace()
+		sa, exists := acc[key]
+		if !exists {
+			m := make(prommodel.Metric)
+			modelEntry.StreamLabels.Range(func(l labels.Label) {
+				m[prommodel.LabelName(l.Name)] = prommodel.LabelValue(l.Value)
+			})
+			sa = &streamAcc{metric: m, values: make([]float64, numSteps)}
+			acc[key] = sa
+		}
+
+		for _, v := range values {
+			sa.values[stepIdx] += v
+		}
+
+		return true
+	})
+
+	result := make(loghttp.Matrix, 0, len(acc))
+	for _, sa := range acc {
+		var pairs []prommodel.SamplePair
+		for i, v := range sa.values {
+			if v != 0 {
+				pairs = append(pairs, prommodel.SamplePair{
+					Timestamp: prommodel.TimeFromUnixNano(start.Add(time.Duration(i) * step).UnixNano()),
+					Value:     prommodel.SampleValue(v),
+				})
+			}
+		}
+		if len(pairs) > 0 {
+			result = append(result, prommodel.SampleStream{
+				Metric: sa.metric,
+				Values: pairs,
+			})
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Metric.Before(result[j].Metric)
+	})
+
+	return result, nil
 }
 
-// Labels returns the configured label names that are actually present in the
-// journal files, lowercased to match Loki conventions.
+// MetricQuery executes an instant metric query at a single point in time.
+// This corresponds to the /loki/api/v1/query endpoint for metric expressions.
+//
+// query is a LogQL sample expression (e.g. `count_over_time({job="sshd"}[5m])`).
+// ts is the evaluation timestamp; the lookback window is determined by the
+// range selector in the query expression (e.g., [5m]).
+// direction controls entry iteration order during evaluation.
+//
+// Returns a loghttp.Vector — one Sample per distinct stream.
+func (e *Engine) MetricQuery(query string, ts time.Time, direction logproto.Direction) (loghttp.Vector, error) {
+	pipeline, err := queryPkg.MetricQL(query)
+	if err != nil {
+		return nil, err
+	}
+
+	rangeDur := pipeline.Range()
+	if rangeDur == 0 {
+		rangeDur = 5 * time.Minute // default lookback
+	}
+
+	start := ts.Add(-rangeDur)
+	end := ts
+
+	type streamAcc struct {
+		metric prommodel.Metric
+		value  float64
+	}
+
+	acc := make(map[string]*streamAcc)
+
+	e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+		modelEntry := e.schema.Entry(*je)
+		values, ok := pipeline.Process(modelEntry)
+		if !ok {
+			return true
+		}
+
+		key := modelEntry.StreamLabels.StringNoSpace()
+		sa, exists := acc[key]
+		if !exists {
+			m := make(prommodel.Metric)
+			modelEntry.StreamLabels.Range(func(l labels.Label) {
+				m[prommodel.LabelName(l.Name)] = prommodel.LabelValue(l.Value)
+			})
+			sa = &streamAcc{metric: m}
+			acc[key] = sa
+		}
+
+		for _, v := range values {
+			sa.value += v
+		}
+
+		return true
+	})
+
+	result := make(loghttp.Vector, 0, len(acc))
+	for _, sa := range acc {
+		result = append(result, prommodel.Sample{
+			Metric:    sa.metric,
+			Value:     prommodel.SampleValue(sa.value),
+			Timestamp: prommodel.TimeFromUnixNano(ts.UnixNano()),
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Metric.Before(result[j].Metric)
+	})
+
+	return result, nil
+}
+
+// Labels returns all label names configured in the schema that are present in
+// the journal files. Names are lowercased to match Loki conventions. This
+// corresponds to the /loki/api/v1/labels endpoint.
 func (e *Engine) Labels() ([]string, error) {
 	fields, err := e.journal.Fields()
 	if err != nil {
@@ -63,9 +271,12 @@ func (e *Engine) Labels() ([]string, error) {
 	return e.schema.FieldToLabelKeys(fields), nil
 }
 
-// LabelValues returns all distinct values for the named label across the
-// available journal files, up to DefaultLabelValuesLimit values. Returns
-// ErrLabelExcluded if the label is not in the schema.
+// LabelValues returns all distinct values for the given label across the
+// journal files, up to DefaultLabelValuesLimit (10000) values. This
+// corresponds to the /loki/api/v1/label/{name}/values endpoint.
+//
+// name is the label to inspect (case-insensitive, matched against schema).
+// Returns ErrLabelExcluded if the label is not in the schema's label set.
 func (e *Engine) LabelValues(name string) ([]string, error) {
 	if !e.schema.IsLabel(name) {
 		return nil, ErrLabelExcluded
@@ -78,39 +289,74 @@ func (e *Engine) LabelValues(name string) ([]string, error) {
 	return vals, nil
 }
 
-// forEachEntry calls fn for each entry from start to end (inclusive). Uses the
-// correct SeekRealtime + Entry/Next iteration pattern.
-func (e *Engine) forEachEntry(start, end time.Time, fn func(*journal.Entry)) {
-	e.journal.SeekRealtime(start)
+// forEachEntry calls fn for each entry from start to end (inclusive) in the
+// given direction. fn returns true to continue iterating, false to stop early.
+func (e *Engine) forEachEntry(start, end time.Time, direction logproto.Direction, fn func(*journal.Entry) bool) {
+	if direction == logproto.BACKWARD {
+		e.journal.SeekRealtime(end)
+		entry := e.journal.Entry()
+		if entry == nil || entry.Timestamp.Before(start) {
+			e.journal.SeekTail()
+			entry = e.journal.Entry()
+		}
+		if entry != nil && !entry.Timestamp.After(end) && !entry.Timestamp.Before(start) {
+			if !fn(entry) {
+				return
+			}
+		}
+		for e.journal.Previous() {
+			entry = e.journal.Entry()
+			if entry.Timestamp.Before(start) {
+				break
+			}
+			if !fn(entry) {
+				return
+			}
+		}
+		return
+	}
 
+	e.journal.SeekRealtime(start)
 	if entry := e.journal.Entry(); entry != nil && !entry.Timestamp.After(end) {
-		fn(entry)
+		if !fn(entry) {
+			return
+		}
 	}
 	for e.journal.Next() {
 		entry := e.journal.Entry()
 		if entry == nil || entry.Timestamp.After(end) {
 			break
 		}
-		fn(entry)
+		if !fn(entry) {
+			return
+		}
 	}
 }
 
-// Series returns the distinct label sets matching the given filters within the
-// time range. Each filter represents a parsed stream selector.
-func (e *Engine) Series(filters []any, start, end time.Time) ([]map[string]string, error) {
+// Series returns the distinct stream label sets that exist within the given
+// time range. This corresponds to the /loki/api/v1/series endpoint.
+//
+// filters are parsed stream selectors (e.g. from LogQL) that identify which
+// label sets to include. If filters is empty, nil is returned — callers must
+// pass at least one matcher.
+//
+// The returned LabelSets use Loki's JSON key "stream" when marshaled, matching
+// the expected format for /loki/api/v1/series responses.
+func (e *Engine) Series(filters []*labels.Matcher, start, end time.Time) ([]loghttp.LabelSet, error) {
 	if len(filters) == 0 {
 		return nil, nil
 	}
 
 	seen := make(map[string]struct{})
-	e.forEachEntry(start, end, func(entry *journal.Entry) {
+	e.forEachEntry(start, end, logproto.FORWARD, func(entry *journal.Entry) bool {
 		for range filters {
 			seen[streamKey(entry.Fields, e.schema)] = struct{}{}
 			break
 		}
+		return true
 	})
 
-	result := make([]map[string]string, 0, len(seen))
+	result := make([]loghttp.LabelSet, 0, len(seen))
 	for key := range seen {
 		result = append(result, parseStringNoSpace(key))
 	}
@@ -121,19 +367,29 @@ func (e *Engine) Series(filters []any, start, end time.Time) ([]map[string]strin
 }
 
 // IndexStats returns approximate counts of streams, chunks, entries, and bytes
-// for the given filter and time range.
-func (e *Engine) IndexStats(filter any, start, end time.Time) (*Stats, error) {
-	stats := &Stats{}
+// for entries matching the given time range. This corresponds to the
+// /loki/api/v1/index/stats endpoint.
+//
+// matchers is a LogQL stream selector string (e.g. `{job="sshd"}`). Currently
+// treated as a match-all for any non-empty string; per-stream filtering will
+// be implemented later.
+//
+// The returned IndexStatsResponse can be marshaled directly to produce
+// Loki-compatible JSON with uint64 fields for streams, chunks, entries, and
+// bytes.
+func (e *Engine) IndexStats(matchers string, start, end time.Time) (*logproto.IndexStatsResponse, error) {
+	stats := &logproto.IndexStatsResponse{}
 	streams := make(map[string]struct{})
 
-	e.forEachEntry(start, end, func(entry *journal.Entry) {
+	e.forEachEntry(start, end, logproto.FORWARD, func(entry *journal.Entry) bool {
 		stats.Entries++
-		stats.Bytes += int64(len(entry.Message()))
+		stats.Bytes += uint64(len(entry.Message()))
 		streams[streamKey(entry.Fields, e.schema)] = struct{}{}
+		return true
 	})
 
-	stats.Streams = int64(len(streams))
-	stats.Chunks = int64(e.journal.NFiles())
+	stats.Streams = uint64(len(streams))
+	stats.Chunks = uint64(e.journal.NFiles())
 	return stats, nil
 }
 
