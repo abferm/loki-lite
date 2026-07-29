@@ -1,6 +1,8 @@
 package query
 
 import (
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/abferm/loki-lite/model"
@@ -77,6 +79,67 @@ func (mp *MetricPipeline) Process(entry model.Entry) ([]float64, bool) {
 // Matchers returns the stream selectors from the parsed metric query.
 func (mp *MetricPipeline) Matchers() []*labels.Matcher {
 	return mp.selector.Matchers()
+}
+
+// HasRealSelector reports whether the metric query contains at least one
+// non-empty stream selector. Expressions like vector(1)+vector(1) have no
+// real selectors and should be evaluated as literals rather than matched
+// against journal entries.
+func (mp *MetricPipeline) HasRealSelector() bool {
+	for _, m := range mp.selector.Matchers() {
+		if m.Name != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// EvaluateLiteral evaluates a metric expression that has no real stream
+// selector (e.g. vector(1)+vector(1)) and returns the resulting scalar value.
+func (mp *MetricPipeline) EvaluateLiteral() (float64, error) {
+	return evalSampleExpr(mp.expr)
+}
+
+func evalSampleExpr(expr syntax.SampleExpr) (float64, error) {
+	switch e := expr.(type) {
+	case *syntax.VectorExpr:
+		return e.Val, e.Err()
+	case *syntax.LiteralExpr:
+		return e.Val, nil
+	case *syntax.BinOpExpr:
+		left, err := evalSampleExpr(e.SampleExpr)
+		if err != nil {
+			return 0, err
+		}
+		right, err := evalSampleExpr(e.RHS)
+		if err != nil {
+			return 0, err
+		}
+		switch e.Op {
+		case "+":
+			return left + right, nil
+		case "-":
+			return left - right, nil
+		case "*":
+			return left * right, nil
+		case "/":
+			if right == 0 {
+				return 0, fmt.Errorf("division by zero")
+			}
+			return left / right, nil
+		case "%":
+			if right == 0 {
+				return 0, fmt.Errorf("division by zero")
+			}
+			return float64(int64(left) % int64(right)), nil
+		case "^":
+			return math.Pow(left, right), nil
+		default:
+			return 0, fmt.Errorf("unsupported binary operator %q", e.Op)
+		}
+	default:
+		return 0, fmt.Errorf("unsupported literal expression type %T", expr)
+	}
 }
 
 // Range returns the range duration from the metric query's range selector

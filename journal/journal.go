@@ -3,9 +3,11 @@ package journal
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,8 +16,9 @@ import (
 // list is the active file receiving new entries. Handles file rotation, gap
 // detection across files, and header reload when the active file grows.
 //
-// Not safe for concurrent use. Each goroutine should open its own Journal.
+// Safe for concurrent use via a built-in mutex.
 type Journal struct {
+	mu         sync.Mutex
 	dir        string
 	name       string
 	files      []*File
@@ -26,8 +29,45 @@ type Journal struct {
 
 // OpenJournal opens all journal files matching name in dir. Files are opened as
 // name.journal (active) and name@*.journal (archived), sorted by HeadEntrySeqnum.
-// Returns error if no matching files exist or any file fails to open.
+//
+// If name.journal is not found directly in dir, OpenJournal searches one
+// level of subdirectories (e.g. the machine-id directory used by journald).
+// If exactly one subdirectory contains name.journal, it is used automatically.
+// Returns error if no matching files exist, multiple subdirectories match,
+// or any file fails to open.
 func OpenJournal(dir, name string) (*Journal, error) {
+	// Check if the journal file exists directly in dir.
+	directPattern := filepath.Join(dir, name+".journal")
+	if _, err := filepath.Glob(directPattern); err == nil {
+		if _, err := os.Stat(directPattern); err == nil {
+			return openJournalDir(dir, name)
+		}
+	}
+
+	// Search one level of subdirectories.
+	subPattern := filepath.Join(dir, "*", name+".journal")
+	subMatches, err := filepath.Glob(subPattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to glob journal files: %w", err)
+	}
+
+	switch len(subMatches) {
+	case 0:
+		return nil, fmt.Errorf("no journal files found for %q in %s", name, dir)
+	case 1:
+		return openJournalDir(filepath.Dir(subMatches[0]), name)
+	default:
+		var dirs []string
+		for _, m := range subMatches {
+			dirs = append(dirs, filepath.Dir(m))
+		}
+		return nil, fmt.Errorf("multiple journal directories found for %q in %s: %v; specify the directory directly", name, dir, dirs)
+	}
+}
+
+// openJournalDir opens all journal files matching name in dir after the
+// directory has been resolved.
+func openJournalDir(dir, name string) (*Journal, error) {
 	var filePaths []string
 
 	pattern := filepath.Join(dir, name+"*.journal")
@@ -383,6 +423,18 @@ func (j *Journal) openNewActiveFile() {
 		j.files = append(j.files, r)
 		j.activeIdx = len(j.files) - 1
 	}
+}
+
+// Lock acquires the journal mutex. Call before a sequence of methods that
+// must not be interleaved by concurrent goroutines (e.g. SeekRealtime + Next
+// + Entry). Pair with Unlock when done.
+func (j *Journal) Lock() {
+	j.mu.Lock()
+}
+
+// Unlock releases the journal mutex.
+func (j *Journal) Unlock() {
+	j.mu.Unlock()
 }
 
 // Entry returns the current entry, or nil if no entry has been read yet.

@@ -1,13 +1,14 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+
+	jsoniter "github.com/json-iterator/go"
 	"time"
 
 	"github.com/abferm/loki-lite/engine"
@@ -357,7 +358,7 @@ func writeLokiResponse(w http.ResponseWriter, status int, resultType string, res
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	jsoniter.ConfigFastest.NewEncoder(w).Encode(v)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -401,17 +402,24 @@ func parseBounds(r *http.Request) (time.Time, time.Time, error) {
 	return start, end, nil
 }
 
-// parseTimestamp parses a Unix epoch timestamp (seconds, possibly fractional)
-// or an RFC3339 string. If val is empty, def is returned.
+// parseTimestamp parses a Unix epoch timestamp (seconds or nanoseconds,
+// possibly fractional) or an RFC3339 string. If val is empty, def is returned.
+//
+// Grafana and the Loki API use nanosecond timestamps (> 1e12). Values ≤ 1e12
+// are treated as seconds.
 func parseTimestamp(val string, def time.Time) (time.Time, error) {
 	if val == "" {
 		return def, nil
 	}
 
-	// Try Unix epoch (integer or float seconds).
-	if secs, err := strconv.ParseFloat(val, 64); err == nil {
-		sec := int64(secs)
-		nsec := int64((secs - float64(sec)) * 1e9)
+	// Try Unix epoch (integer or float).
+	if v, err := strconv.ParseFloat(val, 64); err == nil {
+		// Grafana sends nanosecond timestamps (> ~year 33658 in seconds).
+		if v > 1e12 {
+			v /= 1e9
+		}
+		sec := int64(v)
+		nsec := int64((v - float64(sec)) * 1e9)
 		return time.Unix(sec, nsec), nil
 	}
 
