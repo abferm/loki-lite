@@ -2,6 +2,7 @@ package util
 
 import (
 	"errors"
+	"log/slog"
 	"sync"
 )
 
@@ -41,6 +42,12 @@ func (p *Pool[T]) Acquire() (T, error) {
 	if len(p.idle) > 0 {
 		v := p.idle[len(p.idle)-1]
 		p.idle = p.idle[:len(p.idle)-1]
+		slog.Info("pool.acquire",
+			"source", "idle",
+			"idle", len(p.idle),
+			"total", p.total,
+			"max", p.max,
+		)
 		return v, nil
 	}
 
@@ -55,6 +62,12 @@ func (p *Pool[T]) Acquire() (T, error) {
 			var zero T
 			return zero, ErrPoolClosed
 		}
+		slog.Info("pool.acquire",
+			"source", "created",
+			"idle", len(p.idle),
+			"total", p.total,
+			"max", p.max,
+		)
 		return v, nil
 	}
 
@@ -65,6 +78,12 @@ func (p *Pool[T]) Acquire() (T, error) {
 	if len(p.idle) > 0 {
 		v := p.idle[len(p.idle)-1]
 		p.idle = p.idle[:len(p.idle)-1]
+		slog.Info("pool.acquire",
+			"source", "wait",
+			"idle", len(p.idle),
+			"total", p.total,
+			"max", p.max,
+		)
 		return v, nil
 	}
 
@@ -83,6 +102,11 @@ func (p *Pool[T]) Release(v T) {
 	}
 
 	p.idle = append(p.idle, v)
+	slog.Info("pool.release",
+		"idle", len(p.idle),
+		"total", p.total,
+		"max", p.max,
+	)
 	p.cond.Signal()
 }
 

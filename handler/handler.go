@@ -1,15 +1,18 @@
 package handler
 
 import (
+	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	jsoniter "github.com/json-iterator/go"
-	"time"
 
 	"github.com/abferm/loki-lite/engine"
 	"github.com/grafana/loki/v3/pkg/loghttp"
@@ -17,6 +20,32 @@ import (
 	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/prometheus/model/labels"
 )
+
+type queryStats struct {
+	resultType  string
+	resultCount int
+}
+
+type statsCtxKeyType struct{}
+
+var statsCtxKey statsCtxKeyType
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+	bytes      int64
+}
+
+func (w *loggingResponseWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *loggingResponseWriter) Write(b []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
+}
 
 const (
 	defaultQueryLimit = 100
@@ -37,9 +66,73 @@ func New(eng *engine.Engine) *Handler {
 	return h
 }
 
-// Handler returns the http.Handler for this Loki API.
+// Handler returns the http.Handler for this Loki API with compression and
+// logging middleware.
 func (h *Handler) Handler() http.Handler {
-	return h.mux
+	return h.loggingMiddleware(WithCompression(h.mux))
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	w *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.w.Write(b)
+}
+
+// WithCompression wraps h with gzip compression when the client includes
+// Accept-Encoding: gzip in the request. Browsers, Grafana, and most HTTP
+// clients send this header by default.
+func WithCompression(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gw := gzip.NewWriter(w)
+		defer gw.Close()
+		w.Header().Set("Content-Encoding", "gzip")
+		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, w: gw}, r)
+	})
+}
+
+// loggingMiddleware wraps an http.Handler with request logging.
+func (h *Handler) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		stats := &queryStats{}
+		ctx := context.WithValue(r.Context(), statsCtxKey, stats)
+		r = r.WithContext(ctx)
+		lrw := &loggingResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(lrw, r)
+
+		query := r.FormValue("query")
+		attrs := []slog.Attr{
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.Int("status", lrw.statusCode),
+			slog.Int64("bytes", lrw.bytes),
+			slog.Duration("duration", time.Since(start)),
+		}
+		if query != "" {
+			attrs = append(attrs, slog.String("query", query))
+		}
+		if start := r.FormValue("start"); start != "" {
+			attrs = append(attrs, slog.String("start", start))
+		}
+		if end := r.FormValue("end"); end != "" {
+			attrs = append(attrs, slog.String("end", end))
+		}
+		if step := r.FormValue("step"); step != "" {
+			attrs = append(attrs, slog.String("step", step))
+		}
+		if stats.resultType != "" {
+			attrs = append(attrs, slog.String("result_type", stats.resultType))
+			attrs = append(attrs, slog.Int("results", stats.resultCount))
+		}
+		slog.LogAttrs(r.Context(), slog.LevelInfo, "request", attrs...)
+	})
 }
 
 func (h *Handler) registerRoutes() {
@@ -112,6 +205,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		setQueryStats(r, "matrix", len(result))
 		writeLokiResponse(w, http.StatusOK, "matrix", result)
 	default:
 		result, err := h.engine.LogQueryRange(query, start, end, limit, direction)
@@ -119,6 +213,11 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		totalEntries := 0
+		for _, s := range result {
+			totalEntries += len(s.Entries)
+		}
+		setQueryStats(r, "streams", totalEntries)
 		writeLokiResponse(w, http.StatusOK, "streams", result)
 	}
 }
@@ -156,6 +255,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		setQueryStats(r, "vector", len(result))
 		writeLokiResponse(w, http.StatusOK, "vector", result)
 	default:
 		limit := parseLimit(r.FormValue("limit"))
@@ -164,6 +264,11 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		totalEntries := 0
+		for _, s := range result {
+			totalEntries += len(s.Entries)
+		}
+		setQueryStats(r, "streams", totalEntries)
 		writeLokiResponse(w, http.StatusOK, "streams", result)
 	}
 }
@@ -178,6 +283,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	setQueryStats(r, "labels", len(labels))
 	writeJSON(w, http.StatusOK, loghttp.LabelResponse{
 		Status: "success",
 		Data:   labels,
@@ -199,6 +305,7 @@ func (h *Handler) handleLabelValues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	setQueryStats(r, "values", len(vals))
 	writeJSON(w, http.StatusOK, loghttp.LabelResponse{
 		Status: "success",
 		Data:   vals,
@@ -239,6 +346,7 @@ func (h *Handler) handleSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	setQueryStats(r, "series", len(result))
 
 	data := make([]map[string]string, len(result))
 	for i, ls := range result {
@@ -271,6 +379,7 @@ func (h *Handler) handleIndexStats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	setQueryStats(r, "stats", int(stats.Entries))
 	writeJSON(w, http.StatusOK, stats)
 }
 
@@ -327,6 +436,13 @@ func (h *Handler) handleNotImplemented(w http.ResponseWriter, r *http.Request) {
 // read-only frontend for journald.
 func (h *Handler) handleReadOnly(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotImplemented, "Loki Lite is a read-only query frontend for journald and does not support ingestion, flushing, or deletion")
+}
+
+func setQueryStats(r *http.Request, resultType string, resultCount int) {
+	if stats, ok := r.Context().Value(statsCtxKey).(*queryStats); ok {
+		stats.resultType = resultType
+		stats.resultCount = resultCount
+	}
 }
 
 // formatQueryResponse is the JSON response for /loki/api/v1/format_query.

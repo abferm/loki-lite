@@ -3,8 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/abferm/loki-lite/engine"
@@ -21,6 +22,12 @@ func main() {
 	addr := flag.String("addr", ":3100", "listen address")
 	flag.Parse()
 
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		AddSource: true,
+		Level:     slog.LevelInfo,
+	})))
+	slog.Info("starting loki-lite", "journal_dir", *journalDir, "journal_name", *journalName, "addr", *addr)
+
 	pool := util.NewPool(10, func() *journal.Journal {
 		j, err := journal.OpenJournal(*journalDir, *journalName)
 		if err != nil {
@@ -34,6 +41,9 @@ func main() {
 	eng := engine.New(pool, &schema)
 	h := handler.New(eng)
 
-	fmt.Printf("Loki Lite listening on %s\n", *addr)
-	log.Fatal(http.ListenAndServe(*addr, h.Handler()))
+	slog.Info("listening", "addr", *addr)
+	if err := http.ListenAndServe(*addr, h.Handler()); err != nil {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
+	}
 }
