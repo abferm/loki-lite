@@ -152,6 +152,12 @@ func (e *Engine) MetricQueryRange(query string, start, end time.Time, step time.
 
 	numSteps := int(end.Sub(start)/step) + 1
 
+	rangeDur := pipeline.Range()
+	adjustedStart := start.Add(-rangeDur)
+	if adjustedStart.Before(time.Unix(0, 0)) {
+		adjustedStart = time.Unix(0, 0)
+	}
+
 	type streamAcc struct {
 		metric prommodel.Metric
 		values []float64
@@ -159,7 +165,7 @@ func (e *Engine) MetricQueryRange(query string, start, end time.Time, step time.
 
 	acc := make(map[string]*streamAcc)
 
-	if err := e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+	if err := e.forEachEntry(adjustedStart, end, direction, func(je *journal.Entry) bool {
 		modelEntry := e.schema.Entry(*je)
 		values, ok := pipeline.Process(modelEntry)
 		if !ok {

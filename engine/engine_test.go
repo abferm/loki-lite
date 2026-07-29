@@ -886,3 +886,69 @@ func TestMetricQueryInvalidQuery(t *testing.T) {
 		t.Fatal("expected error for invalid query")
 	}
 }
+
+func TestMetricQueryRangeStartEqualsEnd(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "one"}},
+		{seqnum: 2, realtime: 2_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "two"}},
+		{seqnum: 3, realtime: 3_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "three"}},
+	})
+
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
+
+	// Grafana Logs Volume pattern: start == end, step == range (1d aggregation).
+	// count_over_time with range wider than data span should capture all entries.
+	result, err := eng.MetricQueryRange(`count_over_time({job="sshd"}[10s])`, time.Unix(10, 0), time.Unix(10, 0), 10*time.Second, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 stream, got %d", len(result))
+	}
+	if len(result[0].Values) != 1 {
+		t.Fatalf("expected 1 sample pair, got %d", len(result[0].Values))
+	}
+	if float64(result[0].Values[0].Value) != 3.0 {
+		t.Errorf("expected value 3.0, got %v", result[0].Values[0].Value)
+	}
+}
+
+func TestMetricQueryRangeAggregationWrapsRange(t *testing.T) {
+	dir := t.TempDir()
+	writeTestJournal(t, dir, "test.journal", []testEntry{
+		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "level": "info", "MESSAGE": "one"}},
+		{seqnum: 2, realtime: 2_000_000, fields: map[string]string{"job": "sshd", "level": "error", "MESSAGE": "two"}},
+		{seqnum: 3, realtime: 3_000_000, fields: map[string]string{"job": "sshd", "level": "info", "MESSAGE": "three"}},
+	})
+
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
+
+	// sum by (level) wraps count_over_time with start == end.
+	// The range from the aggregation wrapper must be extracted.
+	result, err := eng.MetricQueryRange(`sum by (level) (count_over_time({job="sshd"}[10s]))`, time.Unix(10, 0), time.Unix(10, 0), 10*time.Second, logproto.FORWARD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 streams (info, error), got %d", len(result))
+	}
+	for _, s := range result {
+		if len(s.Values) != 1 {
+			t.Fatalf("expected 1 sample pair per stream, got %d for %v", len(s.Values), s.Metric)
+		}
+		val := float64(s.Values[0].Value)
+		switch s.Metric["level"] {
+		case "info":
+			if val != 2.0 {
+				t.Errorf("expected info=2.0, got %v", val)
+			}
+		case "error":
+			if val != 1.0 {
+				t.Errorf("expected error=1.0, got %v", val)
+			}
+		default:
+			t.Errorf("unexpected level label value: %v", s.Metric["level"])
+		}
+	}
+}

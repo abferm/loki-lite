@@ -144,12 +144,30 @@ func evalSampleExpr(expr syntax.SampleExpr) (float64, error) {
 
 // Range returns the range duration from the metric query's range selector
 // (e.g., the `5m` in `count_over_time({job="sshd"}[5m])`).
-// Returns 0 if the expression does not contain a range selector.
+// Recursively unwraps wrapper expressions (VectorAggregationExpr, BinOpExpr)
+// to find the innermost RangeAggregationExpr. Returns 0 if the expression
+// does not contain a range selector.
 func (mp *MetricPipeline) Range() time.Duration {
-	if ra, ok := mp.expr.(*syntax.RangeAggregationExpr); ok {
-		if ra.Left != nil {
-			return ra.Left.Interval
+	return extractRange(mp.expr)
+}
+
+func extractRange(expr syntax.SampleExpr) time.Duration {
+	switch e := expr.(type) {
+	case *syntax.RangeAggregationExpr:
+		if e.Left != nil {
+			return e.Left.Interval
 		}
+	case *syntax.VectorAggregationExpr:
+		if e.Left != nil {
+			return extractRange(e.Left)
+		}
+	case *syntax.BinOpExpr:
+		left := extractRange(e.SampleExpr)
+		right := extractRange(e.RHS)
+		if left > right {
+			return left
+		}
+		return right
 	}
 	return 0
 }
