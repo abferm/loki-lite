@@ -24,7 +24,9 @@ RUN chown -R developer:developer /go
 # Pre-install Go tooling — linter, language server, formatter, and debugger.
 # All installed as the developer user so they land in /go/bin and are
 # available immediately without fetching on first use.
-RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.63.0 && \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.63.0 && \
     go install golang.org/x/tools/gopls@latest && \
     go install golang.org/x/tools/cmd/goimports@latest && \
     go install golang.org/x/lint/golint@latest && \
@@ -59,18 +61,23 @@ CMD ["bash"]
 # Inherits all Go tools, cached modules, and source from the dev stage.
 # ----------------------------------------------------------------------
 FROM dev AS build
+USER root
 
 # Copy dependency files first so Docker caches the module download layer
 # unless go.mod actually changes. (go.sum appears only after external deps
 # are added; the * glob lets us copy it when present without failing.)
 COPY go.mod go.* ./
-RUN go mod download 2>/dev/null || true
+RUN --mount=type=cache,target=/home/developer/go/pkg/mod \
+    --mount=type=cache,target=/home/developer/.cache/go-build \
+    go mod download 2>/dev/null || true
 
 # Copy the full source tree and build a statically-linked binary.
 # go install places it in $GOPATH/bin (the developer's home dir),
 # which doesn't need any special directory setup.
 COPY . .
-RUN CGO_ENABLED=0 go install .
+RUN --mount=type=cache,target=/home/developer/go/pkg/mod \
+    --mount=type=cache,target=/home/developer/.cache/go-build \
+    CGO_ENABLED=0 go install .
 
 # ----------------------------------------------------------------------
 # Production stage — minimal runtime image with just the binary.

@@ -1,6 +1,6 @@
 [journal]
 dir = "${JOURNAL_DIR:-/var/log/journal}"
-name = "${JOURNAL_NAME:-}"
+name = "${JOURNAL_NAME:-system}"
 
 [schema]
 exclude = [
