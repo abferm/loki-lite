@@ -226,7 +226,7 @@ func TestSeriesEmpty(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	// Empty filters returns nil.
 	result, err := eng.Series(nil, time.Unix(0, 0), time.Unix(10, 0))
@@ -251,7 +251,7 @@ func TestSeriesMatchAll(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -285,7 +285,7 @@ func TestSeriesTimeRange(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	// Query 2s to 6s — should match only job=b.
 	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(2, 0), time.Unix(6, 0))
@@ -313,7 +313,7 @@ func TestSeriesDeduplication(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -338,7 +338,7 @@ func TestIndexStatsMatchAll(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	stats, err := eng.IndexStats("all", time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -372,7 +372,7 @@ func TestIndexStatsTimeRange(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	// Query 2s to 6s — only entry at 5s.
 	stats, err := eng.IndexStats("all", time.Unix(2, 0), time.Unix(6, 0))
@@ -400,7 +400,7 @@ func TestIndexStatsDeduplicatesStreams(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	stats, err := eng.IndexStats("all", time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -427,7 +427,7 @@ func TestLabels(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"PRIORITY", "job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	labels, err := eng.Labels()
 	if err != nil {
@@ -459,7 +459,7 @@ func TestLabelValues(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job", "PRIORITY"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	vals, err := eng.LabelValues("job")
 	if err != nil {
@@ -490,7 +490,7 @@ func TestLabelValuesExcluded(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	_, err = eng.LabelValues("MESSAGE")
 	if err != ErrLabelExcluded {
@@ -511,7 +511,7 @@ func TestLogQueryRangeBasic(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -544,7 +544,7 @@ func TestLogQueryRangeAllStreams(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job=~".+"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -569,7 +569,7 @@ func TestLogQueryRangeTimeFiltering(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(2, 0), time.Unix(6, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -602,7 +602,7 @@ func TestLogQueryRangeLimit(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 3, logproto.FORWARD)
 	if err != nil {
@@ -631,7 +631,7 @@ func TestLogQueryRangeDirectionBackward(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 2, logproto.BACKWARD)
 	if err != nil {
@@ -665,7 +665,7 @@ func TestLogQueryRangeDirectionForward(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 2, logproto.FORWARD)
 	if err != nil {
@@ -697,7 +697,7 @@ func TestLogQueryRangeNoMatch(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="nginx"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -722,7 +722,7 @@ func TestLogQueryRangeLineFilter(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"} |= "login"`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -748,7 +748,7 @@ func TestLogQueryRangeInvalidQuery(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	_, err = eng.LogQueryRange(`not a valid query`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err == nil {
@@ -770,7 +770,7 @@ func TestMetricQueryRangeCountOverTime(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	// 1s steps over 0-3s → 4 data points
 	result, err := eng.MetricQueryRange(`count_over_time({job="sshd"}[1s])`, time.Unix(0, 0), time.Unix(4, 0), time.Second, logproto.FORWARD)
@@ -808,7 +808,7 @@ func TestMetricQueryRangeBytesOverTime(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	// 5s steps over 0-10s → 2 data points
 	result, err := eng.MetricQueryRange(`bytes_over_time({job="sshd"}[5s])`, time.Unix(0, 0), time.Unix(10, 0), 5*time.Second, logproto.FORWARD)
@@ -843,7 +843,7 @@ func TestMetricQueryRangeMultipleStreams(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.MetricQueryRange(`count_over_time({job=~".+"}[1s])`, time.Unix(0, 0), time.Unix(2, 0), time.Second, logproto.FORWARD)
 	if err != nil {
@@ -866,7 +866,7 @@ func TestMetricQueryRangeNoMatch(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.MetricQueryRange(`count_over_time({job="nginx"}[1s])`, time.Unix(0, 0), time.Unix(10, 0), time.Second, logproto.FORWARD)
 	if err != nil {
@@ -889,7 +889,7 @@ func TestMetricQueryRangeInvalidQuery(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	_, err = eng.MetricQueryRange(`not a valid query`, time.Unix(0, 0), time.Unix(10, 0), time.Second, logproto.FORWARD)
 	if err == nil {
@@ -910,7 +910,7 @@ func TestMetricQueryRangeDirectionBackward(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	// Direction doesn't affect the output values, only iteration order.
 	result, err := eng.MetricQueryRange(`count_over_time({job="sshd"}[1s])`, time.Unix(0, 0), time.Unix(3, 0), time.Second, logproto.BACKWARD)
@@ -944,7 +944,7 @@ func TestMetricQueryCountOverTime(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	// Instant query at ts=5s with [5s] range should count entries in [0,5s]
 	result, err := eng.MetricQuery(`count_over_time({job="sshd"}[5s])`, time.Unix(5, 0), logproto.FORWARD)
@@ -976,7 +976,7 @@ func TestMetricQueryBytesOverTime(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	// Instant query at ts=3s with [3s] range → entries at 1s,2s → 2+5=7 bytes
 	result, err := eng.MetricQuery(`bytes_over_time({job="sshd"}[3s])`, time.Unix(3, 0), logproto.FORWARD)
@@ -1015,7 +1015,7 @@ func TestMetricQueryNoMatch(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	result, err := eng.MetricQuery(`count_over_time({job="nginx"}[5s])`, time.Unix(5, 0), logproto.FORWARD)
 	if err != nil {
@@ -1038,7 +1038,7 @@ func TestMetricQueryInvalidQuery(t *testing.T) {
 	}
 	defer j.Close()
 
-	eng := New(j, &model.Schema{Labels: []string{"job"}})
+	eng := New(j, &model.Schema{Exclude: nil})
 
 	_, err = eng.MetricQuery(`not a valid query`, time.Unix(5, 0), logproto.FORWARD)
 	if err == nil {

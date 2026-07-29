@@ -33,8 +33,8 @@ type Engine struct {
 }
 
 // New creates an Engine that reads from j and uses schema to determine which
-// fields are stream labels. Fields not in schema.Labels are treated as
-// structured metadata, not stream identity.
+// fields are excluded from stream labels (high cardinality). Non-excluded
+// fields become stream labels; excluded fields become structured metadata.
 func New(j *journal.Journal, schema *model.Schema) *Engine {
 	return &Engine{journal: j, schema: schema}
 }
@@ -75,9 +75,8 @@ func (e *Engine) LogQueryRange(query string, start, end time.Time, limit int, di
 			streamKey: processed.StreamLabels.StringNoSpace(),
 			streamLbl: processed.StreamLabels,
 			entry: loghttp.Entry{
-				Timestamp:          processed.Timestamp,
-				Line:               processed.Line,
-				StructuredMetadata: processed.StructuredMetadata,
+				Timestamp: processed.Timestamp,
+				Line:      processed.Line,
 			},
 		})
 		return limit <= 0 || len(all) < limit
@@ -122,6 +121,28 @@ func (e *Engine) MetricQueryRange(query string, start, end time.Time, step time.
 	pipeline, err := queryPkg.MetricQL(query)
 	if err != nil {
 		return nil, err
+	}
+
+	if !pipeline.HasRealSelector() {
+		val, err := pipeline.EvaluateLiteral()
+		if err != nil {
+			return nil, err
+		}
+		numSteps := int(end.Sub(start)/step) + 1
+		var pairs []prommodel.SamplePair
+		for i := 0; i < numSteps; i++ {
+			ts := start.Add(time.Duration(i) * step)
+			pairs = append(pairs, prommodel.SamplePair{
+				Timestamp: prommodel.TimeFromUnixNano(ts.UnixNano()),
+				Value:     prommodel.SampleValue(val),
+			})
+		}
+		return loghttp.Matrix{
+			{
+				Metric: prommodel.Metric{},
+				Values: pairs,
+			},
+		}, nil
 	}
 
 	numSteps := int(end.Sub(start)/step) + 1
@@ -204,6 +225,20 @@ func (e *Engine) MetricQuery(query string, ts time.Time, direction logproto.Dire
 		return nil, err
 	}
 
+	if !pipeline.HasRealSelector() {
+		val, err := pipeline.EvaluateLiteral()
+		if err != nil {
+			return nil, err
+		}
+		return loghttp.Vector{
+			{
+				Metric: prommodel.Metric{},
+				Value:  prommodel.SampleValue(val),
+				Timestamp: prommodel.TimeFromUnixNano(ts.UnixNano()),
+			},
+		}, nil
+	}
+
 	rangeDur := pipeline.Range()
 	if rangeDur == 0 {
 		rangeDur = 5 * time.Minute // default lookback
@@ -260,29 +295,60 @@ func (e *Engine) MetricQuery(query string, ts time.Time, direction logproto.Dire
 	return result, nil
 }
 
-// Labels returns all label names configured in the schema that are present in
-// the journal files. Names are lowercased to match Loki conventions. This
-// corresponds to the /loki/api/v1/labels endpoint.
+// Labels returns all label names present in the journal files that are NOT
+// in the schema's exclude list. Names are lowercased to match Loki
+// conventions. This corresponds to the /loki/api/v1/labels endpoint.
 func (e *Engine) Labels() ([]string, error) {
+	e.journal.Lock()
+	defer e.journal.Unlock()
 	fields, err := e.journal.Fields()
 	if err != nil {
 		return nil, err
 	}
-	return e.schema.FieldToLabelKeys(fields), nil
+	var out []string
+	excluded := e.schema.Excluded()
+	for _, f := range fields {
+		lower := strings.ToLower(f)
+		if _, ok := excluded[lower]; !ok && lower != "message" {
+			out = append(out, lower)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // LabelValues returns all distinct values for the given label across the
 // journal files, up to DefaultLabelValuesLimit (10000) values. This
 // corresponds to the /loki/api/v1/label/{name}/values endpoint.
 //
-// name is the label to inspect (case-insensitive, matched against schema).
-// Returns ErrLabelExcluded if the label is not in the schema's label set.
+// name is the label to inspect (case-insensitive). Returns ErrLabelExcluded
+// if the label is in the schema's exclude list.
 func (e *Engine) LabelValues(name string) ([]string, error) {
 	if !e.schema.IsLabel(name) {
 		return nil, ErrLabelExcluded
 	}
 
-	vals, _, err := e.journal.FieldValues(name, DefaultLabelValuesLimit)
+	e.journal.Lock()
+	defer e.journal.Unlock()
+
+	// Resolve case-insensitive name to the exact journal field name.
+	fieldName := e.schema.FieldName(name)
+	if fieldName == name {
+		// Not found in Exclude — find the exact case from journal fields.
+		fields, err := e.journal.Fields()
+		if err != nil {
+			return nil, err
+		}
+		lower := strings.ToLower(name)
+		for _, f := range fields {
+			if strings.ToLower(f) == lower {
+				fieldName = f
+				break
+			}
+		}
+	}
+
+	vals, _, err := e.journal.FieldValues(fieldName, DefaultLabelValuesLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -292,6 +358,9 @@ func (e *Engine) LabelValues(name string) ([]string, error) {
 // forEachEntry calls fn for each entry from start to end (inclusive) in the
 // given direction. fn returns true to continue iterating, false to stop early.
 func (e *Engine) forEachEntry(start, end time.Time, direction logproto.Direction, fn func(*journal.Entry) bool) {
+	e.journal.Lock()
+	defer e.journal.Unlock()
+
 	if direction == logproto.BACKWARD {
 		e.journal.SeekRealtime(end)
 		entry := e.journal.Entry()
@@ -389,12 +458,14 @@ func (e *Engine) IndexStats(matchers string, start, end time.Time) (*logproto.In
 	})
 
 	stats.Streams = uint64(len(streams))
+	e.journal.Lock()
 	stats.Chunks = uint64(e.journal.NFiles())
+	e.journal.Unlock()
 	return stats, nil
 }
 
-// streamKey produces a deterministic string key for the schema-defined labels
-// in fields using labels.Labels.StringNoSpace.
+// streamKey produces a deterministic string key for the stream labels in
+// fields, matching the stream identity used in LogQueryRange.
 func streamKey(fields map[string]string, schema *model.Schema) string {
 	return labels.FromMap(schema.StreamLabelsMap(fields)).StringNoSpace()
 }

@@ -16,7 +16,7 @@ import (
 func main() {
 	journalDir := flag.String("journal-dir", "/var/log/journal", "path to journald directory")
 	journalName := flag.String("journal", "", "journal name prefix (empty = all)")
-	labels := flag.String("labels", "job", "comma-separated list of stream label field names")
+	exclude := flag.String("exclude", "MESSAGE,SYSLOG_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP,_SOURCE_REALTIME_TIMESTAMP", "comma-separated journal fields to exclude from stream labels (high cardinailty)")
 	addr := flag.String("addr", ":3100", "listen address")
 	flag.Parse()
 
@@ -26,7 +26,7 @@ func main() {
 	}
 	defer j.Close()
 
-	schema := model.NewSchema(strings.Split(*labels, ","))
+	schema := model.NewSchema(strings.Split(*exclude, ","))
 	eng := engine.New(j, &schema)
 	h := handler.New(eng)
 

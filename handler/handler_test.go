@@ -223,7 +223,7 @@ func setupTestHandler(t *testing.T, entries []testEntry) (*Handler, *engine.Engi
 	}
 	t.Cleanup(func() { j.Close() })
 
-	schema := model.NewSchema([]string{"job"})
+	schema := model.NewSchema([]string{})
 	eng := engine.New(j, &schema)
 	return New(eng), eng
 }
@@ -257,7 +257,7 @@ func TestLabels(t *testing.T) {
 	}
 	t.Cleanup(func() { j.Close() })
 
-	schema := model.NewSchema([]string{"job", "PRIORITY"})
+	schema := model.NewSchema([]string{})
 	eng := engine.New(j, &schema)
 	h := New(eng)
 

@@ -1,109 +1,117 @@
-// Package model defines the shared types that bridge journald entries to
-// Loki-compatible log entries. Schema controls which journald fields become
-// stream labels versus structured metadata.
 package model
 
 import (
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/abferm/loki-lite/journal"
+	"github.com/abferm/loki-lite/util"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
-// Schema defines which journald fields become Loki stream labels.
-// Fields not listed become structured metadata. The MESSAGE field is always
-// mapped to the log line.
+// Schema defines which journald fields become structured metadata (i.e., not
+// stream labels). The MESSAGE field is always mapped to the log line. All
+// other fields become stream labels by default.
 type Schema struct {
-	Labels []string
+	// Exclude lists high-cardinality fields that should NOT be stream labels.
+	// These become structured metadata instead, still queryable via LogQL
+	// label filter expressions but not included in the stream identity.
+	Exclude []string
 }
 
-// NewSchema creates a Schema with deduplicated label names.
-func NewSchema(labelNames []string) Schema {
-	return Schema{Labels: unique(labelNames)}
+// NewSchema creates a Schema with deduplicated excluded field names.
+func NewSchema(exclude []string) Schema {
+	return Schema{Exclude: util.Unique(exclude)}
 }
 
-// LabelNames returns the configured label field names, lowercased to match
-// Loki conventions.
+// IsLabel reports whether name is NOT excluded and NOT MESSAGE, using
+// case-insensitive comparison.
+func (s Schema) IsLabel(name string) bool {
+	lower := strings.ToLower(name)
+	if lower == "message" {
+		return false
+	}
+	for _, ex := range s.Exclude {
+		if strings.ToLower(ex) == lower {
+			return false
+		}
+	}
+	return true
+}
+
+// FieldName resolves a case-insensitive name to its original case. Checks
+// Exclude first, then returns name unchanged (the caller should validate
+// via IsLabel or verify against the journal).
+func (s Schema) FieldName(name string) string {
+	lower := strings.ToLower(name)
+	for _, ex := range s.Exclude {
+		if strings.ToLower(ex) == lower {
+			return ex
+		}
+	}
+	return name
+}
+
+// LabelNames returns all excluded field names lowercased.
 func (s Schema) LabelNames() []string {
-	out := make([]string, len(s.Labels))
-	for i, l := range s.Labels {
+	out := make([]string, len(s.Exclude))
+	for i, l := range s.Exclude {
 		out[i] = strings.ToLower(l)
 	}
 	return out
 }
 
-// IsLabel reports whether name matches one of the configured label fields,
-// using case-insensitive comparison.
-func (s Schema) IsLabel(name string) bool {
-	lower := strings.ToLower(name)
-	return slices.ContainsFunc(s.Labels, func(l string) bool {
-		return strings.ToLower(l) == lower
-	})
+// Excluded returns a case-insensitive set of excluded field names.
+func (s Schema) Excluded() map[string]struct{} {
+	set := make(map[string]struct{}, len(s.Exclude))
+	for _, ex := range s.Exclude {
+		set[strings.ToLower(ex)] = struct{}{}
+	}
+	return set
 }
 
-// FieldToLabelKeys returns the subset of fieldKeys that are configured label
-// fields, lowercased and preserving the order of s.Labels.
-func (s Schema) FieldToLabelKeys(fieldKeys []string) []string {
-	set := make(map[string]struct{}, len(fieldKeys))
-	for _, k := range fieldKeys {
-		set[strings.ToLower(k)] = struct{}{}
-	}
-	var out []string
-	for _, l := range s.Labels {
-		if _, ok := set[strings.ToLower(l)]; ok {
-			out = append(out, strings.ToLower(l))
-		}
-	}
-	return out
-}
-
-// StreamLabelsMap extracts the configured label fields from fields and returns
-// them as a plain map with lowercased keys. Fields not present in the input
-// are omitted.
+// StreamLabelsMap returns all fields that are NOT excluded and NOT MESSAGE,
+// with lowercased keys.
 func (s Schema) StreamLabelsMap(fields map[string]string) map[string]string {
-	m := make(map[string]string, len(s.Labels))
-	for _, name := range s.Labels {
-		if v, ok := fields[name]; ok {
-			m[strings.ToLower(name)] = v
+	m := make(map[string]string, len(fields))
+	excluded := s.Excluded()
+	for k, v := range fields {
+		lower := strings.ToLower(k)
+		if _, ok := excluded[lower]; ok || k == "MESSAGE" {
+			continue
 		}
+		m[lower] = v
 	}
 	return m
 }
 
-// StreamLabels builds a labels.Labels from the configured label fields.
+// StreamLabels builds a labels.Labels from all non-excluded, non-MESSAGE fields.
 func (s Schema) StreamLabels(fields map[string]string) labels.Labels {
 	return labels.FromMap(s.StreamLabelsMap(fields))
 }
 
-// StructuredMetadataMap returns all fields that are NOT configured labels and
-// NOT MESSAGE, as a plain map with lowercased keys.
+// StructuredMetadataMap returns only excluded fields as a plain map with
+// lowercased keys. MESSAGE is always excluded from metadata.
 func (s Schema) StructuredMetadataMap(fields map[string]string) map[string]string {
-	labelSet := make(map[string]struct{}, len(s.Labels))
-	for _, l := range s.Labels {
-		labelSet[strings.ToLower(l)] = struct{}{}
-	}
-
-	m := make(map[string]string, len(fields))
+	excluded := s.Excluded()
+	m := make(map[string]string, len(s.Exclude))
 	for k, v := range fields {
 		lower := strings.ToLower(k)
-		if _, isLabel := labelSet[lower]; !isLabel && k != "MESSAGE" {
+		if _, ok := excluded[lower]; ok && k != "MESSAGE" {
 			m[lower] = v
 		}
 	}
 	return m
 }
 
-// StructuredMetadata builds a labels.Labels from all fields NOT in the
-// configured label set and NOT MESSAGE.
+// StructuredMetadata builds a labels.Labels from excluded fields only.
 func (s Schema) StructuredMetadata(fields map[string]string) labels.Labels {
 	return labels.FromMap(s.StructuredMetadataMap(fields))
 }
 
 // Entry converts a journal.Entry into a Loki-compatible representation.
-// MESSAGE becomes the Line, configured label fields become stream labels,
-// and remaining fields become structured metadata.
+// MESSAGE becomes the Line, excluded fields become structured metadata,
+// and all other fields become stream labels.
 func (s Schema) Entry(entry journal.Entry) Entry {
 	return Entry{
 		Timestamp:          entry.Timestamp,
@@ -120,16 +128,4 @@ type Entry struct {
 	Line               string
 	StreamLabels       labels.Labels
 	StructuredMetadata labels.Labels
-}
-
-func unique[T comparable](in []T) []T {
-	seen := make(map[T]struct{}, len(in))
-	var out []T
-	for _, v := range in {
-		if _, ok := seen[v]; !ok {
-			seen[v] = struct{}{}
-			out = append(out, v)
-		}
-	}
-	return out
 }
