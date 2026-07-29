@@ -63,7 +63,7 @@ FROM dev AS build
 # Copy dependency files first so Docker caches the module download layer
 # unless go.mod actually changes. (go.sum appears only after external deps
 # are added; the * glob lets us copy it when present without failing.)
-COPY go.mod ./
+COPY go.mod go.* ./
 RUN go mod download 2>/dev/null || true
 
 # Copy the full source tree and build a statically-linked binary.
@@ -82,8 +82,10 @@ FROM alpine:latest AS production
 RUN addgroup -g 1000 app && \
     adduser -u 1000 -G app -D -h /home/app app
 
-# Copy only the compiled binary from the build stage
+# Copy only the compiled binary from the build stage and the default config
 COPY --from=build /home/developer/go/bin/loki-lite /app/bin/app
+COPY config.toml /app/config.toml
 
 USER app
 ENTRYPOINT ["/app/bin/app"]
+CMD ["-config", "/app/config.toml"]

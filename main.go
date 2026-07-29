@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 
+	"github.com/abferm/loki-lite/config"
 	"github.com/abferm/loki-lite/engine"
 	"github.com/abferm/loki-lite/handler"
 	"github.com/abferm/loki-lite/journal"
@@ -16,20 +16,23 @@ import (
 )
 
 func main() {
-	journalDir := flag.String("journal-dir", "/var/log/journal", "path to journald directory")
-	journalName := flag.String("journal", "", "journal name prefix (empty = all)")
-	exclude := flag.String("exclude", "MESSAGE,SYSLOG_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP,_SOURCE_REALTIME_TIMESTAMP", "comma-separated journal fields to exclude from stream labels (high cardinailty)")
-	addr := flag.String("addr", ":3100", "listen address")
+	cfgPath := flag.String("config", "", "path to TOML config file")
 	flag.Parse()
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		os.Exit(1)
+	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		AddSource: true,
 		Level:     slog.LevelInfo,
 	})))
-	slog.Info("starting loki-lite", "journal_dir", *journalDir, "journal_name", *journalName, "addr", *addr)
+	slog.Info("starting loki-lite", "journal_dir", cfg.Journal.Dir, "journal_name", cfg.Journal.Name, "addr", cfg.Server.Addr)
 
-	pool := util.NewPool(10, func() *journal.Journal {
-		j, err := journal.OpenJournal(*journalDir, *journalName)
+	pool := util.NewPool(cfg.Server.PoolMax, func() *journal.Journal {
+		j, err := journal.OpenJournal(cfg.Journal.Dir, cfg.Journal.Name)
 		if err != nil {
 			panic(fmt.Sprintf("open journal: %v", err))
 		}
@@ -37,12 +40,12 @@ func main() {
 	}, func(j *journal.Journal) { j.Close() })
 	defer pool.Close()
 
-	schema := model.NewSchema(strings.Split(*exclude, ","))
+	schema := model.NewSchema(cfg.Schema.Exclude)
 	eng := engine.New(pool, &schema)
 	h := handler.New(eng)
 
-	slog.Info("listening", "addr", *addr)
-	if err := http.ListenAndServe(*addr, h.Handler()); err != nil {
+	slog.Info("listening", "addr", cfg.Server.Addr)
+	if err := http.ListenAndServe(cfg.Server.Addr, h.Handler()); err != nil {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}

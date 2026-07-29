@@ -1,0 +1,15 @@
+[journal]
+dir = "${JOURNAL_DIR:-/var/log/journal}"
+name = "${JOURNAL_NAME:-}"
+
+[schema]
+exclude = [
+    "MESSAGE",
+    "SYSLOG_TIMESTAMP",
+    "_SOURCE_MONOTONIC_TIMESTAMP",
+    "_SOURCE_REALTIME_TIMESTAMP",
+]
+
+[server]
+addr = "${ADDR:-:3100}"
+pool_max = ${POOL_MAX:-10}
