@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,9 +11,23 @@ import (
 
 	"github.com/abferm/loki-lite/journal"
 	"github.com/abferm/loki-lite/model"
+	"github.com/abferm/loki-lite/util"
 	"github.com/grafana/loki/v3/pkg/logproto"
 	"github.com/prometheus/prometheus/model/labels"
 )
+
+func newTestEngine(t *testing.T, dir, name string, schema *model.Schema) *Engine {
+	t.Helper()
+	pool := util.NewPool(5, func() *journal.Journal {
+		j, err := journal.OpenJournal(dir, name)
+		if err != nil {
+			panic(fmt.Sprintf("newTestEngine: %v", err))
+		}
+		return j
+	}, func(j *journal.Journal) { j.Close() })
+	t.Cleanup(func() { pool.Close() })
+	return New(pool, schema)
+}
 
 type testEntry struct {
 	seqnum   uint64
@@ -220,13 +235,7 @@ func TestSeriesEmpty(t *testing.T) {
 		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	// Empty filters returns nil.
 	result, err := eng.Series(nil, time.Unix(0, 0), time.Unix(10, 0))
@@ -245,13 +254,7 @@ func TestSeriesMatchAll(t *testing.T) {
 		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "nginx", "MESSAGE": "world"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -279,13 +282,7 @@ func TestSeriesTimeRange(t *testing.T) {
 		{seqnum: 3, realtime: 10000000, fields: map[string]string{"job": "c"}},   // 10 seconds
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	// Query 2s to 6s — should match only job=b.
 	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(2, 0), time.Unix(6, 0))
@@ -307,13 +304,7 @@ func TestSeriesDeduplication(t *testing.T) {
 		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "sshd", "MESSAGE": "two"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.Series([]*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "", "")}, time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -332,13 +323,7 @@ func TestIndexStatsMatchAll(t *testing.T) {
 		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "nginx", "MESSAGE": "world!"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	stats, err := eng.IndexStats("all", time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -366,13 +351,7 @@ func TestIndexStatsTimeRange(t *testing.T) {
 		{seqnum: 3, realtime: 10000000, fields: map[string]string{"job": "c", "MESSAGE": "zzz"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	// Query 2s to 6s — only entry at 5s.
 	stats, err := eng.IndexStats("all", time.Unix(2, 0), time.Unix(6, 0))
@@ -394,13 +373,7 @@ func TestIndexStatsDeduplicatesStreams(t *testing.T) {
 		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "sshd", "MESSAGE": "two"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	stats, err := eng.IndexStats("all", time.Unix(0, 0), time.Unix(10, 0))
 	if err != nil {
@@ -421,13 +394,7 @@ func TestLabels(t *testing.T) {
 		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "PRIORITY": "4", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	labels, err := eng.Labels()
 	if err != nil {
@@ -453,13 +420,7 @@ func TestLabelValues(t *testing.T) {
 		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "nginx", "PRIORITY": "6"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	vals, err := eng.LabelValues("job")
 	if err != nil {
@@ -484,15 +445,9 @@ func TestLabelValuesExcluded(t *testing.T) {
 		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
-	eng := New(j, &model.Schema{Exclude: nil})
-
-	_, err = eng.LabelValues("MESSAGE")
+	_, err := eng.LabelValues("MESSAGE")
 	if err != ErrLabelExcluded {
 		t.Fatalf("expected ErrLabelExcluded, got %v", err)
 	}
@@ -505,13 +460,7 @@ func TestLogQueryRangeBasic(t *testing.T) {
 		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "nginx", "MESSAGE": "world"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -538,13 +487,7 @@ func TestLogQueryRangeAllStreams(t *testing.T) {
 		{seqnum: 2, realtime: 2000000, fields: map[string]string{"job": "nginx", "MESSAGE": "two"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job=~".+"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -563,13 +506,7 @@ func TestLogQueryRangeTimeFiltering(t *testing.T) {
 		{seqnum: 3, realtime: 10000000, fields: map[string]string{"job": "sshd", "MESSAGE": "late"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(2, 0), time.Unix(6, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -596,13 +533,7 @@ func TestLogQueryRangeLimit(t *testing.T) {
 		{seqnum: 5, realtime: 5000000, fields: map[string]string{"job": "sshd", "MESSAGE": "e"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 3, logproto.FORWARD)
 	if err != nil {
@@ -625,13 +556,7 @@ func TestLogQueryRangeDirectionBackward(t *testing.T) {
 		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "sshd", "MESSAGE": "third"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 2, logproto.BACKWARD)
 	if err != nil {
@@ -659,13 +584,7 @@ func TestLogQueryRangeDirectionForward(t *testing.T) {
 		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "sshd", "MESSAGE": "third"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"}`, time.Unix(0, 0), time.Unix(10, 0), 2, logproto.FORWARD)
 	if err != nil {
@@ -691,13 +610,7 @@ func TestLogQueryRangeNoMatch(t *testing.T) {
 		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="nginx"}`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -716,13 +629,7 @@ func TestLogQueryRangeLineFilter(t *testing.T) {
 		{seqnum: 3, realtime: 3000000, fields: map[string]string{"job": "sshd", "MESSAGE": "login failed"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.LogQueryRange(`{job="sshd"} |= "login"`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err != nil {
@@ -742,15 +649,9 @@ func TestLogQueryRangeInvalidQuery(t *testing.T) {
 		{seqnum: 1, realtime: 1000000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
-	eng := New(j, &model.Schema{Exclude: nil})
-
-	_, err = eng.LogQueryRange(`not a valid query`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
+	_, err := eng.LogQueryRange(`not a valid query`, time.Unix(0, 0), time.Unix(10, 0), 0, logproto.FORWARD)
 	if err == nil {
 		t.Fatal("expected error for invalid query")
 	}
@@ -764,13 +665,7 @@ func TestMetricQueryRangeCountOverTime(t *testing.T) {
 		{seqnum: 3, realtime: 3_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "three"}}, // 3s
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	// 1s steps over 0-3s → 4 data points
 	result, err := eng.MetricQueryRange(`count_over_time({job="sshd"}[1s])`, time.Unix(0, 0), time.Unix(4, 0), time.Second, logproto.FORWARD)
@@ -802,13 +697,7 @@ func TestMetricQueryRangeBytesOverTime(t *testing.T) {
 		{seqnum: 3, realtime: 5_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "world"}},  // 5 bytes
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	// 5s steps over 0-10s → 2 data points
 	result, err := eng.MetricQueryRange(`bytes_over_time({job="sshd"}[5s])`, time.Unix(0, 0), time.Unix(10, 0), 5*time.Second, logproto.FORWARD)
@@ -837,13 +726,7 @@ func TestMetricQueryRangeMultipleStreams(t *testing.T) {
 		{seqnum: 2, realtime: 1_000_000, fields: map[string]string{"job": "nginx", "MESSAGE": "two"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.MetricQueryRange(`count_over_time({job=~".+"}[1s])`, time.Unix(0, 0), time.Unix(2, 0), time.Second, logproto.FORWARD)
 	if err != nil {
@@ -860,13 +743,7 @@ func TestMetricQueryRangeNoMatch(t *testing.T) {
 		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.MetricQueryRange(`count_over_time({job="nginx"}[1s])`, time.Unix(0, 0), time.Unix(10, 0), time.Second, logproto.FORWARD)
 	if err != nil {
@@ -883,15 +760,9 @@ func TestMetricQueryRangeInvalidQuery(t *testing.T) {
 		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
-	eng := New(j, &model.Schema{Exclude: nil})
-
-	_, err = eng.MetricQueryRange(`not a valid query`, time.Unix(0, 0), time.Unix(10, 0), time.Second, logproto.FORWARD)
+	_, err := eng.MetricQueryRange(`not a valid query`, time.Unix(0, 0), time.Unix(10, 0), time.Second, logproto.FORWARD)
 	if err == nil {
 		t.Fatal("expected error for invalid query")
 	}
@@ -904,13 +775,7 @@ func TestMetricQueryRangeDirectionBackward(t *testing.T) {
 		{seqnum: 2, realtime: 2_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "two"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	// Direction doesn't affect the output values, only iteration order.
 	result, err := eng.MetricQueryRange(`count_over_time({job="sshd"}[1s])`, time.Unix(0, 0), time.Unix(3, 0), time.Second, logproto.BACKWARD)
@@ -938,13 +803,7 @@ func TestMetricQueryCountOverTime(t *testing.T) {
 		{seqnum: 3, realtime: 3_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "three"}}, // 3s
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	// Instant query at ts=5s with [5s] range should count entries in [0,5s]
 	result, err := eng.MetricQuery(`count_over_time({job="sshd"}[5s])`, time.Unix(5, 0), logproto.FORWARD)
@@ -970,13 +829,7 @@ func TestMetricQueryBytesOverTime(t *testing.T) {
 		{seqnum: 3, realtime: 5_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "world"}},  // 5 bytes
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	// Instant query at ts=3s with [3s] range → entries at 1s,2s → 2+5=7 bytes
 	result, err := eng.MetricQuery(`bytes_over_time({job="sshd"}[3s])`, time.Unix(3, 0), logproto.FORWARD)
@@ -1009,13 +862,7 @@ func TestMetricQueryNoMatch(t *testing.T) {
 		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
-
-	eng := New(j, &model.Schema{Exclude: nil})
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
 	result, err := eng.MetricQuery(`count_over_time({job="nginx"}[5s])`, time.Unix(5, 0), logproto.FORWARD)
 	if err != nil {
@@ -1032,15 +879,9 @@ func TestMetricQueryInvalidQuery(t *testing.T) {
 		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer j.Close()
+	eng := newTestEngine(t, dir, "test", &model.Schema{Exclude: nil})
 
-	eng := New(j, &model.Schema{Exclude: nil})
-
-	_, err = eng.MetricQuery(`not a valid query`, time.Unix(5, 0), logproto.FORWARD)
+	_, err := eng.MetricQuery(`not a valid query`, time.Unix(5, 0), logproto.FORWARD)
 	if err == nil {
 		t.Fatal("expected error for invalid query")
 	}

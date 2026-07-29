@@ -15,6 +15,7 @@ import (
 	"github.com/abferm/loki-lite/engine"
 	"github.com/abferm/loki-lite/journal"
 	"github.com/abferm/loki-lite/model"
+	"github.com/abferm/loki-lite/util"
 )
 
 type testEntry struct {
@@ -217,14 +218,17 @@ func setupTestHandler(t *testing.T, entries []testEntry) (*Handler, *engine.Engi
 	dir := t.TempDir()
 	writeTestJournal(t, dir, "test.journal", entries)
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { j.Close() })
+	pool := util.NewPool(5, func() *journal.Journal {
+		j, err := journal.OpenJournal(dir, "test")
+		if err != nil {
+			panic(fmt.Sprintf("setupTestHandler: %v", err))
+		}
+		return j
+	}, func(j *journal.Journal) { j.Close() })
+	t.Cleanup(func() { pool.Close() })
 
 	schema := model.NewSchema([]string{})
-	eng := engine.New(j, &schema)
+	eng := engine.New(pool, &schema)
 	return New(eng), eng
 }
 
@@ -251,14 +255,17 @@ func TestLabels(t *testing.T) {
 		{seqnum: 1, realtime: 1_000_000, fields: map[string]string{"job": "sshd", "PRIORITY": "4", "MESSAGE": "hello"}},
 	})
 
-	j, err := journal.OpenJournal(dir, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { j.Close() })
+	pool := util.NewPool(5, func() *journal.Journal {
+		j, err := journal.OpenJournal(dir, "test")
+		if err != nil {
+			panic(fmt.Sprintf("TestLabels: %v", err))
+		}
+		return j
+	}, func(j *journal.Journal) { j.Close() })
+	t.Cleanup(func() { pool.Close() })
 
 	schema := model.NewSchema([]string{})
-	eng := engine.New(j, &schema)
+	eng := engine.New(pool, &schema)
 	h := New(eng)
 
 	req := httptest.NewRequest("GET", "/loki/api/v1/labels", nil)

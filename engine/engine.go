@@ -12,6 +12,7 @@ import (
 	"github.com/abferm/loki-lite/journal"
 	"github.com/abferm/loki-lite/model"
 	queryPkg "github.com/abferm/loki-lite/query"
+	"github.com/abferm/loki-lite/util"
 	"github.com/grafana/loki/v3/pkg/loghttp"
 	"github.com/grafana/loki/v3/pkg/logproto"
 	prommodel "github.com/prometheus/common/model"
@@ -26,17 +27,19 @@ const DefaultLabelValuesLimit = 10000
 // ErrLabelExcluded is returned when a label is not in the schema's label set.
 var ErrLabelExcluded = fmt.Errorf("label excluded by configuration")
 
-// Engine executes Loki-compatible queries against journald journals.
+// Engine executes Loki-compatible queries against journald journals. For
+// each request it acquires a Journal from the pool, using it for the
+// duration of that request before releasing it back.
 type Engine struct {
-	journal *journal.Journal
-	schema  *model.Schema
+	pool   *util.Pool[*journal.Journal]
+	schema *model.Schema
 }
 
-// New creates an Engine that reads from j and uses schema to determine which
-// fields are excluded from stream labels (high cardinality). Non-excluded
-// fields become stream labels; excluded fields become structured metadata.
-func New(j *journal.Journal, schema *model.Schema) *Engine {
-	return &Engine{journal: j, schema: schema}
+// New creates an Engine that acquires Journals from p for each request.
+// Non-excluded fields become stream labels; excluded fields become structured
+// metadata.
+func New(p *util.Pool[*journal.Journal], schema *model.Schema) *Engine {
+	return &Engine{pool: p, schema: schema}
 }
 
 // LogQueryRange executes a log query over a time range, returning log stream
@@ -65,7 +68,7 @@ func (e *Engine) LogQueryRange(query string, start, end time.Time, limit int, di
 
 	var all []timedEntry
 
-	e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+	if err := e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
 		modelEntry := e.schema.Entry(*je)
 		processed, ok := pipeline.Process(modelEntry)
 		if !ok {
@@ -80,7 +83,9 @@ func (e *Engine) LogQueryRange(query string, start, end time.Time, limit int, di
 			},
 		})
 		return limit <= 0 || len(all) < limit
-	})
+	}); err != nil {
+		return nil, err
+	}
 	grouped := make(map[string]*loghttp.Stream)
 	for _, te := range all {
 		s, exists := grouped[te.streamKey]
@@ -154,7 +159,7 @@ func (e *Engine) MetricQueryRange(query string, start, end time.Time, step time.
 
 	acc := make(map[string]*streamAcc)
 
-	e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+	if err := e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
 		modelEntry := e.schema.Entry(*je)
 		values, ok := pipeline.Process(modelEntry)
 		if !ok {
@@ -182,7 +187,9 @@ func (e *Engine) MetricQueryRange(query string, start, end time.Time, step time.
 		}
 
 		return true
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	result := make(loghttp.Matrix, 0, len(acc))
 	for _, sa := range acc {
@@ -254,7 +261,7 @@ func (e *Engine) MetricQuery(query string, ts time.Time, direction logproto.Dire
 
 	acc := make(map[string]*streamAcc)
 
-	e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+	if err := e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
 		modelEntry := e.schema.Entry(*je)
 		values, ok := pipeline.Process(modelEntry)
 		if !ok {
@@ -277,7 +284,9 @@ func (e *Engine) MetricQuery(query string, ts time.Time, direction logproto.Dire
 		}
 
 		return true
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	result := make(loghttp.Vector, 0, len(acc))
 	for _, sa := range acc {
@@ -299,9 +308,13 @@ func (e *Engine) MetricQuery(query string, ts time.Time, direction logproto.Dire
 // in the schema's exclude list. Names are lowercased to match Loki
 // conventions. This corresponds to the /loki/api/v1/labels endpoint.
 func (e *Engine) Labels() ([]string, error) {
-	e.journal.Lock()
-	defer e.journal.Unlock()
-	fields, err := e.journal.Fields()
+	j, err := e.pool.Acquire()
+	if err != nil {
+		return nil, err
+	}
+	defer e.pool.Release(j)
+
+	fields, err := j.Fields()
 	if err != nil {
 		return nil, err
 	}
@@ -328,14 +341,17 @@ func (e *Engine) LabelValues(name string) ([]string, error) {
 		return nil, ErrLabelExcluded
 	}
 
-	e.journal.Lock()
-	defer e.journal.Unlock()
+	j, err := e.pool.Acquire()
+	if err != nil {
+		return nil, err
+	}
+	defer e.pool.Release(j)
 
 	// Resolve case-insensitive name to the exact journal field name.
 	fieldName := e.schema.FieldName(name)
 	if fieldName == name {
 		// Not found in Exclude — find the exact case from journal fields.
-		fields, err := e.journal.Fields()
+		fields, err := j.Fields()
 		if err != nil {
 			return nil, err
 		}
@@ -348,58 +364,63 @@ func (e *Engine) LabelValues(name string) ([]string, error) {
 		}
 	}
 
-	vals, _, err := e.journal.FieldValues(fieldName, DefaultLabelValuesLimit)
+	vals, _, err := j.FieldValues(fieldName, DefaultLabelValuesLimit)
 	if err != nil {
 		return nil, err
 	}
 	return vals, nil
 }
 
-// forEachEntry calls fn for each entry from start to end (inclusive) in the
-// given direction. fn returns true to continue iterating, false to stop early.
-func (e *Engine) forEachEntry(start, end time.Time, direction logproto.Direction, fn func(*journal.Entry) bool) {
-	e.journal.Lock()
-	defer e.journal.Unlock()
+// forEachEntry acquires a Journal from the pool, calls fn for each entry from
+// start to end (inclusive) in the given direction, and releases it. fn returns
+// true to continue iterating, false to stop early.
+func (e *Engine) forEachEntry(start, end time.Time, direction logproto.Direction, fn func(*journal.Entry) bool) error {
+	j, err := e.pool.Acquire()
+	if err != nil {
+		return err
+	}
+	defer e.pool.Release(j)
 
 	if direction == logproto.BACKWARD {
-		e.journal.SeekRealtime(end)
-		entry := e.journal.Entry()
+		j.SeekRealtime(end)
+		entry := j.Entry()
 		if entry == nil || entry.Timestamp.Before(start) {
-			e.journal.SeekTail()
-			entry = e.journal.Entry()
+			j.SeekTail()
+			entry = j.Entry()
 		}
 		if entry != nil && !entry.Timestamp.After(end) && !entry.Timestamp.Before(start) {
 			if !fn(entry) {
-				return
+				return nil
 			}
 		}
-		for e.journal.Previous() {
-			entry = e.journal.Entry()
+		for j.Previous() {
+			entry = j.Entry()
 			if entry.Timestamp.Before(start) {
 				break
 			}
 			if !fn(entry) {
-				return
+				return nil
 			}
 		}
-		return
+		return nil
 	}
 
-	e.journal.SeekRealtime(start)
-	if entry := e.journal.Entry(); entry != nil && !entry.Timestamp.After(end) {
+	j.SeekRealtime(start)
+	if entry := j.Entry(); entry != nil && !entry.Timestamp.After(end) {
 		if !fn(entry) {
-			return
+			return nil
 		}
 	}
-	for e.journal.Next() {
-		entry := e.journal.Entry()
+	for j.Next() {
+		entry := j.Entry()
 		if entry == nil || entry.Timestamp.After(end) {
 			break
 		}
 		if !fn(entry) {
-			return
+			return nil
 		}
 	}
+	return nil
 }
 
 // Series returns the distinct stream label sets that exist within the given
@@ -417,13 +438,15 @@ func (e *Engine) Series(filters []*labels.Matcher, start, end time.Time) ([]logh
 	}
 
 	seen := make(map[string]struct{})
-	e.forEachEntry(start, end, logproto.FORWARD, func(entry *journal.Entry) bool {
+	if err := e.forEachEntry(start, end, logproto.FORWARD, func(entry *journal.Entry) bool {
 		for range filters {
 			seen[streamKey(entry.Fields, e.schema)] = struct{}{}
 			break
 		}
 		return true
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	result := make([]loghttp.LabelSet, 0, len(seen))
 	for key := range seen {
@@ -450,17 +473,23 @@ func (e *Engine) IndexStats(matchers string, start, end time.Time) (*logproto.In
 	stats := &logproto.IndexStatsResponse{}
 	streams := make(map[string]struct{})
 
-	e.forEachEntry(start, end, logproto.FORWARD, func(entry *journal.Entry) bool {
+	if err := e.forEachEntry(start, end, logproto.FORWARD, func(entry *journal.Entry) bool {
 		stats.Entries++
 		stats.Bytes += uint64(len(entry.Message()))
 		streams[streamKey(entry.Fields, e.schema)] = struct{}{}
 		return true
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	stats.Streams = uint64(len(streams))
-	e.journal.Lock()
-	stats.Chunks = uint64(e.journal.NFiles())
-	e.journal.Unlock()
+
+	j, err := e.pool.Acquire()
+	if err != nil {
+		return nil, err
+	}
+	stats.Chunks = uint64(j.NFiles())
+	e.pool.Release(j)
 	return stats, nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/abferm/loki-lite/handler"
 	"github.com/abferm/loki-lite/journal"
 	"github.com/abferm/loki-lite/model"
+	"github.com/abferm/loki-lite/util"
 )
 
 func main() {
@@ -20,14 +21,17 @@ func main() {
 	addr := flag.String("addr", ":3100", "listen address")
 	flag.Parse()
 
-	j, err := journal.OpenJournal(*journalDir, *journalName)
-	if err != nil {
-		log.Fatalf("open journal: %v", err)
-	}
-	defer j.Close()
+	pool := util.NewPool(10, func() *journal.Journal {
+		j, err := journal.OpenJournal(*journalDir, *journalName)
+		if err != nil {
+			panic(fmt.Sprintf("open journal: %v", err))
+		}
+		return j
+	}, func(j *journal.Journal) { j.Close() })
+	defer pool.Close()
 
 	schema := model.NewSchema(strings.Split(*exclude, ","))
-	eng := engine.New(j, &schema)
+	eng := engine.New(pool, &schema)
 	h := handler.New(eng)
 
 	fmt.Printf("Loki Lite listening on %s\n", *addr)

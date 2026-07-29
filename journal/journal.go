@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -16,9 +15,9 @@ import (
 // list is the active file receiving new entries. Handles file rotation, gap
 // detection across files, and header reload when the active file grows.
 //
-// Safe for concurrent use via a built-in mutex.
+// Not safe for concurrent use. Each goroutine should acquire a dedicated
+// Journal from a Pool.
 type Journal struct {
-	mu         sync.Mutex
 	dir        string
 	name       string
 	files      []*File
@@ -423,18 +422,6 @@ func (j *Journal) openNewActiveFile() {
 		j.files = append(j.files, r)
 		j.activeIdx = len(j.files) - 1
 	}
-}
-
-// Lock acquires the journal mutex. Call before a sequence of methods that
-// must not be interleaved by concurrent goroutines (e.g. SeekRealtime + Next
-// + Entry). Pair with Unlock when done.
-func (j *Journal) Lock() {
-	j.mu.Lock()
-}
-
-// Unlock releases the journal mutex.
-func (j *Journal) Unlock() {
-	j.mu.Unlock()
 }
 
 // Entry returns the current entry, or nil if no entry has been read yet.
