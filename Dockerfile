@@ -31,6 +31,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go install golang.org/x/tools/cmd/goimports@latest && \
     go install golang.org/x/lint/golint@latest && \
     go install github.com/go-delve/delve/cmd/dlv@latest && \
+    go install gotest.tools/gotestsum@v1.13.0 && \
     golangci-lint --version
 
 # Everything Go writes at runtime (installed tools, module cache) goes
@@ -57,27 +58,53 @@ ENTRYPOINT ["/with-host-ids"]
 CMD ["bash"]
 
 # ----------------------------------------------------------------------
-# Build stage — compile a production binary using the dev toolchain.
-# Inherits all Go tools, cached modules, and source from the dev stage.
+# Test stage — run the test suite and emit a JUnit report. Tests always
+# run to completion so the report can be extracted even when they fail;
+# the outcome is recorded in /reports/.status for downstream stages.
 # ----------------------------------------------------------------------
-FROM dev AS build
+FROM dev AS test
 USER root
+ENV GOCACHE=/go-cache
 
 # Copy dependency files first so Docker caches the module download layer
 # unless go.mod actually changes. (go.sum appears only after external deps
 # are added; the * glob lets us copy it when present without failing.)
 COPY go.mod go.* ./
 RUN --mount=type=cache,target=/home/developer/go/pkg/mod \
-    --mount=type=cache,target=/home/developer/.cache/go-build \
+    --mount=type=cache,target=/go-cache \
     go mod download 2>/dev/null || true
 
-# Copy the full source tree and build a statically-linked binary.
-# go install places it in $GOPATH/bin (the developer's home dir),
-# which doesn't need any special directory setup.
+# Copy the full source tree and run the test suite, writing a JUnit XML
+# report that CI tools can consume. The stage always succeeds; the test
+# outcome is stored in .status so the build stage can gate on it.
 COPY . .
 RUN --mount=type=cache,target=/home/developer/go/pkg/mod \
-    --mount=type=cache,target=/home/developer/.cache/go-build \
+    --mount=type=cache,target=/go-cache \
+    mkdir -p /reports && \
+    (gotestsum --junitfile /reports/junit.xml --format testname -- ./... \
+      && echo passed > /reports/.status) \
+    || (echo failed > /reports/.status)
+
+# ----------------------------------------------------------------------
+# Build stage — compile a production binary using the dev toolchain.
+# Inherits source, modules, and tests from the test stage; fails the
+# build if the test suite did not pass.
+# ----------------------------------------------------------------------
+FROM test AS build
+USER root
+
+RUN --mount=type=cache,target=/home/developer/go/pkg/mod \
+    --mount=type=cache,target=/go-cache \
+    test "$(cat /reports/.status)" = passed && \
     CGO_ENABLED=0 go install .
+
+# ----------------------------------------------------------------------
+# Test reports stage — minimal image containing just the test report.
+# Extract with:
+#   docker build --target test-reports -o type=local,dest=reports .
+# ----------------------------------------------------------------------
+FROM scratch AS test-reports
+COPY --from=test /reports/ /
 
 # ----------------------------------------------------------------------
 # Production stage — minimal runtime image with just the binary.

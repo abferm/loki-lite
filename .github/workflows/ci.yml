@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run tests and extract JUnit report
+        run: docker build --target test-reports -o type=local,dest=reports .
+
+      - name: Publish test report
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: reports/junit.xml
+
+      - name: Upload test report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report
+          path: reports/junit.xml
+
+      - name: Fail if tests failed
+        if: always()
+        run: |
+          if [ "$(cat reports/.status)" != "passed" ]; then
+            echo "::error::Test suite failed — see the published report"
+            exit 1
+          fi
+
+  build:
+    name: Build production image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build production image
+        run: docker build --target production -t loki-lite:ci .

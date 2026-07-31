@@ -5,4 +5,5 @@
 Dockerfile
 docker-compose.yml
 README.md
+reports/
 .devcontainer

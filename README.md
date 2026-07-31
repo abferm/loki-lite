@@ -33,9 +33,24 @@ For VS Code: open the repo root and run **Dev Containers: Reopen in Container**.
 
 ## Production build
 
+Tests run as part of the build — the production image is only produced if
+the test suite passes.
+
 ```bash
 docker build --target production -t loki-lite .
 ```
+
+## Testing
+
+Run the test suite in Docker and extract a JUnit XML report (plus a
+`.status` marker) into the local `reports/` directory:
+
+```bash
+docker build --target test-reports -o type=local,dest=reports .
+```
+
+The report is published to CI (see `.github/workflows/ci.yml`) via
+`EnricoMi/publish-unit-test-result-action` when tests run on GitHub.
 
 ## License
 
