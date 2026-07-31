@@ -4,6 +4,8 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -497,6 +499,59 @@ func (e *Engine) IndexStats(matchers string, start, end time.Time) (*logproto.In
 	stats.Chunks = uint64(j.NFiles())
 	e.pool.Release(j)
 	return stats, nil
+}
+
+// Tail streams log entries matching query starting from start. Positions the
+// journal at start, processes the first matching entry there, then delegates
+// to Journal.Follow for all subsequent entries (existing and new). Blocks
+// until ctx is cancelled. Each matching entry is passed to cb with its stream
+// key, stream labels, and loghttp.Entry.
+func (e *Engine) Tail(ctx context.Context, query string, start time.Time, _ int, cb func(string, labels.Labels, loghttp.Entry)) error {
+	pipeline, err := queryPkg.LogQL(query)
+	if err != nil {
+		return err
+	}
+
+	j, err := e.pool.Acquire()
+	if err != nil {
+		return err
+	}
+	defer e.pool.Release(j)
+
+	j.SeekRealtime(start)
+
+	// Send current entry if it matches the query.
+	if entry := j.Entry(); entry != nil {
+		modelEntry := e.schema.Entry(*entry)
+		processed, ok := pipeline.Process(modelEntry)
+		if ok {
+			cb(processed.StreamLabels.StringNoSpace(), processed.StreamLabels, loghttp.Entry{
+				Timestamp: processed.Timestamp,
+				Line:      processed.Line,
+			})
+		}
+	}
+
+	// Live follow — never stop based on limit.
+	if err := j.Follow(ctx, 100*time.Millisecond, func(je *journal.Entry) bool {
+		modelEntry := e.schema.Entry(*je)
+		processed, ok := pipeline.Process(modelEntry)
+		if !ok {
+			return true
+		}
+		cb(processed.StreamLabels.StringNoSpace(), processed.StreamLabels, loghttp.Entry{
+			Timestamp: processed.Timestamp,
+			Line:      processed.Line,
+		})
+		return true
+	}); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }
 
 // streamKey produces a deterministic string key for the stream labels in

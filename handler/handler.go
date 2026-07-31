@@ -1,18 +1,22 @@
 package handler
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	jsoniter "github.com/json-iterator/go"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/abferm/loki-lite/engine"
 	"github.com/grafana/loki/v3/pkg/loghttp"
@@ -47,6 +51,14 @@ func (w *loggingResponseWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
+func (w *loggingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("hijacking not supported")
+	}
+	return hj.Hijack()
+}
+
 const (
 	defaultQueryLimit = 100
 	defaultSince      = 1 * time.Hour
@@ -79,6 +91,14 @@ type gzipResponseWriter struct {
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.w.Write(b)
+}
+
+func (w *gzipResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("hijacking not supported")
+	}
+	return hj.Hijack()
 }
 
 // WithCompression wraps h with gzip compression when the client includes
@@ -145,8 +165,10 @@ func (h *Handler) registerRoutes() {
 	h.mux.HandleFunc("GET /loki/api/v1/format_query", h.handleFormatQuery)
 	h.mux.HandleFunc("GET /ready", h.handleReady)
 
+	// Tail — WebSocket streaming.
+	h.mux.HandleFunc("GET /loki/api/v1/tail", h.handleTail)
+
 	// Stubs — not yet implemented.
-	h.mux.HandleFunc("GET /loki/api/v1/tail", h.handleNotImplemented)
 	h.mux.HandleFunc("GET /loki/api/v1/patterns", h.handleNotImplemented)
 	h.mux.HandleFunc("GET /loki/api/v1/index/volume", h.handleNotImplemented)
 	h.mux.HandleFunc("GET /loki/api/v1/index/volume_range", h.handleNotImplemented)
@@ -258,7 +280,10 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		setQueryStats(r, "vector", len(result))
 		writeLokiResponse(w, http.StatusOK, "vector", result)
 	default:
-		limit := parseLimit(r.FormValue("limit"))
+	limit := 0
+	if v := r.FormValue("limit"); v != "" {
+		limit = parseLimit(v)
+	}
 		result, err := h.engine.LogQueryRange(query, ts, ts, limit, direction)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -422,6 +447,99 @@ func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "ready")
 }
 
+// handleTail handles GET /loki/api/v1/tail.
+//
+// Upgrades the HTTP connection to a WebSocket and streams log entries that
+// match the LogQL query. First sends matching entries from the start time
+// to the current time (catch-up), then streams new entries as they arrive.
+// Query parameters: query (required), start, end, since, limit.
+func (h *Handler) handleTail(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if v := recover(); v != nil {
+			slog.Error("tail panic", "panic", v)
+		}
+	}()
+
+	query := r.FormValue("query")
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "query parameter required")
+		return
+	}
+
+	start, _, err := parseBounds(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(_ *http.Request) bool { return true },
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		slog.Error("websocket upgrade", "err", err)
+		return
+	}
+	slog.Info("tail started", "query", query, "start", start)
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	defer conn.Close()
+
+	go func() {
+		defer func() {
+			if v := recover(); v != nil {
+				slog.Error("tail read panic", "panic", v)
+				cancel()
+			}
+		}()
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				if closeErr, ok := err.(*websocket.CloseError); ok {
+					if closeErr.Code == websocket.CloseNormalClosure {
+						break
+					}
+				} else if ctx.Err() != nil {
+					return
+				}
+				slog.Error("client error", "err", err)
+				cancel()
+				return
+			}
+		}
+	}()
+
+
+
+	if err := h.engine.Tail(ctx, query, start, 0, func(sk string, sl labels.Labels, e loghttp.Entry) {
+		resp := loghttp.TailResponse{
+			Streams: []loghttp.Stream{{
+				Labels:  loghttp.LabelSet(sl.Map()),
+				Entries: []loghttp.Entry{e},
+			}},
+		}
+		data, err := jsoniter.ConfigFastest.Marshal(resp)
+		if err != nil {
+			slog.Error("tail marshal error", "err", err)
+			cancel()
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			slog.Error("tail write error", "err", err)
+			cancel()
+			return
+		}
+	}); err != nil {
+		if ctx.Err() == nil {
+			slog.Error("tail error", "err", err)
+		}
+	}
+}
+
+// handleNotImplemented handles endpoints that may be added in the future.
+//
+// Returns 501 Not Implemented.
 // handleNotImplemented handles endpoints that may be added in the future.
 //
 // Returns 501 Not Implemented.
@@ -429,8 +547,7 @@ func (h *Handler) handleNotImplemented(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotImplemented, "endpoint not yet implemented in Loki Lite")
 }
 
-// handleReadOnly handles endpoints that are not applicable to a query-only
-// frontend backed by journald.
+// handleReadOnly handles endpoints that are not applicable to a query-only// frontend backed by journald.
 //
 // Returns 501 Not Implemented with a message explaining Loki Lite is a
 // read-only frontend for journald.

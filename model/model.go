@@ -3,6 +3,7 @@ package model
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/abferm/loki-lite/journal"
 	"github.com/abferm/loki-lite/util"
@@ -112,13 +113,36 @@ func (s Schema) StructuredMetadata(fields map[string]string) labels.Labels {
 // Entry converts a journal.Entry into a Loki-compatible representation.
 // MESSAGE becomes the Line, excluded fields become structured metadata,
 // and all other fields become stream labels.
+// All field values are sanitized to valid UTF-8 because journald may
+// contain binary data that cannot be transmitted in a WebSocket text frame.
 func (s Schema) Entry(entry journal.Entry) Entry {
+	fields := sanitizeFields(entry.Fields)
 	return Entry{
 		Timestamp:          entry.Timestamp,
-		Line:               entry.Message(),
-		StreamLabels:       s.StreamLabels(entry.Fields),
-		StructuredMetadata: s.StructuredMetadata(entry.Fields),
+		Line:               fields["MESSAGE"],
+		StreamLabels:       s.StreamLabels(fields),
+		StructuredMetadata: s.StructuredMetadata(fields),
 	}
+}
+
+// sanitizeUTF8 replaces invalid UTF-8 sequences with the Unicode replacement
+// character. This ensures journald binary data does not cause WebSocket text
+// frame protocol errors.
+func sanitizeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	replacement := string(utf8.RuneError)
+	return strings.ToValidUTF8(s, replacement)
+}
+
+// sanitizeFields returns a copy of m with all values sanitized to valid UTF-8.
+func sanitizeFields(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = sanitizeUTF8(v)
+	}
+	return out
 }
 
 // Entry is a log entry with processed line, stream labels, and structured

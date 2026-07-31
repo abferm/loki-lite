@@ -841,7 +841,6 @@ func TestNotImplemented(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"GET", "/loki/api/v1/tail"},
 		{"GET", "/loki/api/v1/patterns"},
 		{"GET", "/loki/api/v1/index/volume"},
 		{"GET", "/loki/api/v1/index/volume_range"},
