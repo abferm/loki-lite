@@ -9,6 +9,18 @@ A Loki-compatible query interface for journald logs. Query-only with no storage 
 - **1-to-1 Loki compatibility** — works with Grafana, logcli, and other Loki clients
 - **Embeddable** — other Go apps can import and run the server as an HTTP handler
 
+## Demo
+
+The demo stack (`demo/compose.yaml`) runs loki-lite next to a Grafana instance with the datasource pre-provisioned, ready to explore your host's journald logs:
+
+![loki-lite demo](demo/demo.gif)
+
+```bash
+docker compose -f demo/compose.yaml up -d --build
+```
+
+Then open http://localhost:3000 (Grafana) and query Loki Lite in Explore, or talk to http://localhost:3100 directly with logcli or curl.
+
 ## Quick start
 
 ```bash
