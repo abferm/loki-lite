@@ -70,7 +70,44 @@ func (e *Engine) LogQueryRange(query string, start, end time.Time, limit int, di
 
 	var all []timedEntry
 
-	if err := e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+	if direction == logproto.BACKWARD {
+		// BACKWARD must return the newest entries first. journald files aren't
+		// indexable backward, so scan forward once, keep the newest `limit`
+		// matches, then reverse — File.Previous would rescan each file from its
+		// head on every step (O(n²) over the window).
+		var kept []timedEntry
+		keptStart := 0
+		if err := e.forEachEntry(start, end, func(je *journal.Entry) bool {
+			modelEntry := e.schema.Entry(*je)
+			processed, ok := pipeline.Process(modelEntry)
+			if !ok {
+				return true
+			}
+			kept = append(kept, timedEntry{
+				streamKey: processed.StreamLabels.StringNoSpace(),
+				streamLbl: processed.StreamLabels,
+				entry: loghttp.Entry{
+					Timestamp: processed.Timestamp,
+					Line:      processed.Line,
+				},
+			})
+			if limit > 0 && len(kept)-keptStart > limit {
+				keptStart++
+				if keptStart >= limit {
+					kept = append(kept[:0], kept[keptStart:]...)
+					keptStart = 0
+				}
+			}
+			return true
+		}); err != nil {
+			return nil, err
+		}
+		n := len(kept) - keptStart
+		all = make([]timedEntry, 0, n)
+		for i := n - 1; i >= 0; i-- {
+			all = append(all, kept[keptStart+i])
+		}
+	} else if err := e.forEachEntry(start, end, func(je *journal.Entry) bool {
 		modelEntry := e.schema.Entry(*je)
 		processed, ok := pipeline.Process(modelEntry)
 		if !ok {
@@ -119,7 +156,7 @@ func (e *Engine) LogQueryRange(query string, start, end time.Time, limit int, di
 // start and end define the time window to search.
 // step is the sampling interval; a data point is produced for each step
 // within [start, end].
-// direction controls entry iteration order; it does not affect the output
+// direction is accepted for API compatibility but does not affect the output
 // order of sampled data points.
 //
 // Returns a loghttp.Matrix — one SampleStream per distinct stream, each
@@ -167,7 +204,7 @@ func (e *Engine) MetricQueryRange(query string, start, end time.Time, step time.
 
 	acc := make(map[string]*streamAcc)
 
-	if err := e.forEachEntry(adjustedStart, end, direction, func(je *journal.Entry) bool {
+	if err := e.forEachEntry(adjustedStart, end, func(je *journal.Entry) bool {
 		modelEntry := e.schema.Entry(*je)
 		values, ok := pipeline.Process(modelEntry)
 		if !ok {
@@ -231,7 +268,7 @@ func (e *Engine) MetricQueryRange(query string, start, end time.Time, step time.
 // query is a LogQL sample expression (e.g. `count_over_time({job="sshd"}[5m])`).
 // ts is the evaluation timestamp; the lookback window is determined by the
 // range selector in the query expression (e.g., [5m]).
-// direction controls entry iteration order during evaluation.
+// direction is accepted for API compatibility and does not affect evaluation.
 //
 // Returns a loghttp.Vector — one Sample per distinct stream.
 func (e *Engine) MetricQuery(query string, ts time.Time, direction logproto.Direction) (loghttp.Vector, error) {
@@ -269,7 +306,7 @@ func (e *Engine) MetricQuery(query string, ts time.Time, direction logproto.Dire
 
 	acc := make(map[string]*streamAcc)
 
-	if err := e.forEachEntry(start, end, direction, func(je *journal.Entry) bool {
+	if err := e.forEachEntry(start, end, func(je *journal.Entry) bool {
 		modelEntry := e.schema.Entry(*je)
 		values, ok := pipeline.Process(modelEntry)
 		if !ok {
@@ -380,38 +417,14 @@ func (e *Engine) LabelValues(name string) ([]string, error) {
 }
 
 // forEachEntry acquires a Journal from the pool, calls fn for each entry from
-// start to end (inclusive) in the given direction, and releases it. fn returns
-// true to continue iterating, false to stop early.
-func (e *Engine) forEachEntry(start, end time.Time, direction logproto.Direction, fn func(*journal.Entry) bool) error {
+// start to end (inclusive) in forward order, and releases it. fn returns true
+// to continue iterating, false to stop early.
+func (e *Engine) forEachEntry(start, end time.Time, fn func(*journal.Entry) bool) error {
 	j, err := e.pool.Acquire()
 	if err != nil {
 		return err
 	}
 	defer e.pool.Release(j)
-
-	if direction == logproto.BACKWARD {
-		j.SeekRealtime(end)
-		entry := j.Entry()
-		if entry == nil || entry.Timestamp.Before(start) {
-			j.SeekTail()
-			entry = j.Entry()
-		}
-		if entry != nil && !entry.Timestamp.After(end) && !entry.Timestamp.Before(start) {
-			if !fn(entry) {
-				return nil
-			}
-		}
-		for j.Previous() {
-			entry = j.Entry()
-			if entry.Timestamp.Before(start) {
-				break
-			}
-			if !fn(entry) {
-				return nil
-			}
-		}
-		return nil
-	}
 
 	j.SeekRealtime(start)
 	if entry := j.Entry(); entry != nil && !entry.Timestamp.After(end) {
@@ -446,7 +459,7 @@ func (e *Engine) Series(filters []*labels.Matcher, start, end time.Time) ([]logh
 	}
 
 	seen := make(map[string]struct{})
-	if err := e.forEachEntry(start, end, logproto.FORWARD, func(entry *journal.Entry) bool {
+	if err := e.forEachEntry(start, end, func(entry *journal.Entry) bool {
 		for range filters {
 			seen[streamKey(entry.Fields, e.schema)] = struct{}{}
 			break
@@ -481,7 +494,7 @@ func (e *Engine) IndexStats(matchers string, start, end time.Time) (*logproto.In
 	stats := &logproto.IndexStatsResponse{}
 	streams := make(map[string]struct{})
 
-	if err := e.forEachEntry(start, end, logproto.FORWARD, func(entry *journal.Entry) bool {
+	if err := e.forEachEntry(start, end, func(entry *journal.Entry) bool {
 		stats.Entries++
 		stats.Bytes += uint64(len(entry.Message()))
 		streams[streamKey(entry.Fields, e.schema)] = struct{}{}
