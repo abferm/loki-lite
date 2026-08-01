@@ -1,5 +1,8 @@
-# Start from the official Go image — it already has Go installed and ready
-FROM golang:1.26.5-bookworm AS dev
+# Start from the official Go image — it already has Go installed and ready.
+# Pin every toolchain stage to the build platform so cross-compilation happens
+# natively (no QEMU), and only the final "production" stage runs on the target
+# architecture.
+FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS dev
 
 # Every command after this runs in the /app folder inside the container
 WORKDIR /app
@@ -62,7 +65,7 @@ CMD ["bash"]
 # run to completion so the report can be extracted even when they fail;
 # the outcome is recorded in /reports/.status for downstream stages.
 # ----------------------------------------------------------------------
-FROM dev AS test
+FROM --platform=$BUILDPLATFORM dev AS test
 USER root
 ENV GOCACHE=/go-cache
 
@@ -86,17 +89,26 @@ RUN --mount=type=cache,target=/home/developer/go/pkg/mod \
     || (echo failed > /reports/.status)
 
 # ----------------------------------------------------------------------
-# Build stage — compile a production binary using the dev toolchain.
-# Inherits source, modules, and tests from the test stage; fails the
-# build if the test suite did not pass.
+# Build stage — cross-compile a production binary for the target platform
+# using the native toolchain. GOARM strips the leading "v" BuildKit puts
+# in TARGETVARIANT ("v7" -> 7) because Go expects the bare number.
 # ----------------------------------------------------------------------
-FROM test AS build
+FROM --platform=$BUILDPLATFORM test AS build
 USER root
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
 
 RUN --mount=type=cache,target=/home/developer/go/pkg/mod \
     --mount=type=cache,target=/go-cache \
     test "$(cat /reports/.status)" = passed && \
-    CGO_ENABLED=0 go install .
+    mkdir -p /out && \
+    CGO_ENABLED=0 \
+    GOOS=$TARGETOS \
+    GOARCH=$TARGETARCH \
+    GOARM=${TARGETVARIANT#v} \
+    go build -o /out/loki-lite .
 
 # ----------------------------------------------------------------------
 # Test reports stage — minimal image containing just the test report.
@@ -109,15 +121,16 @@ COPY --from=test /reports/ /
 # ----------------------------------------------------------------------
 # Production stage — minimal runtime image with just the binary.
 # No Go toolchain, no build tools, no development user setup.
+# This is the only stage that runs on the target architecture.
 # ----------------------------------------------------------------------
-FROM alpine:latest AS production
+FROM --platform=$TARGETPLATFORM alpine:latest AS production
 
 # Create a non-root user to run the application
 RUN addgroup -g 1000 app && \
     adduser -u 1000 -G app -D -h /home/app app
 
-# Copy only the compiled binary from the build stage and the default config
-COPY --from=build /home/developer/go/bin/loki-lite /app/bin/app
+# Copy only the cross-compiled binary from the build stage and the default config
+COPY --from=build /out/loki-lite /app/bin/app
 COPY config.toml /app/config.toml
 
 USER app
