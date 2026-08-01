@@ -9,6 +9,7 @@ jobs:
   publish:
     name: Publish image to Docker Hub
     runs-on: ubuntu-latest
+    environment: "Docker Hub"
     permissions:
       contents: read
     steps:
