@@ -48,6 +48,42 @@ the test suite passes.
 docker build --target production -t loki-lite .
 ```
 
+## Run from Docker Hub
+
+Pre-built multi-arch images are published to [Docker Hub](https://hub.docker.com/r/abferm/loki-lite) on every tagged release (`latest`, `<version>`, `<major>`, `<major>.<minor>`).
+
+The container reads your host's journald logs, so it needs read access to `/var/log/journal` and membership in the `systemd-journal` group (GID `101` on most distros — adjust if yours differs).
+
+### docker run
+
+```bash
+docker run -d \
+  --name loki-lite \
+  -p 3100:3100 \
+  -v /var/log/journal:/var/log/journal:ro \
+  --group-add 101 \
+  abferm/loki-lite:latest
+```
+
+### docker compose
+
+```yaml
+services:
+  loki-lite:
+    image: abferm/loki-lite:latest
+    restart: unless-stopped
+    group_add:
+      - "101"
+    volumes:
+      - /var/log/journal:/var/log/journal:ro
+    ports:
+      - "3100:3100"
+```
+
+Then query http://localhost:3100 with logcli or any Loki client.
+
+The image runs with a bundled default config and honours the `JOURNAL_DIR`, `JOURNAL_NAME`, `ADDR`, and `POOL_MAX` environment variables (see [config.toml](config.toml)). To override anything else, mount your own TOML at `/app/config.toml`.
+
 ## Testing
 
 Run the test suite in Docker and extract a JUnit XML report (plus a
