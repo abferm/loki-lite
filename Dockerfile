@@ -125,6 +125,9 @@ COPY --from=test /reports/ /
 # ----------------------------------------------------------------------
 FROM --platform=$TARGETPLATFORM alpine:latest AS production
 
+# OCI standard label: URL of the source code this image is built from
+LABEL org.opencontainers.image.source="https://github.com/abferm/loki-lite"
+
 # Create a non-root user to run the application
 RUN addgroup -g 1000 app && \
     adduser -u 1000 -G app -D -h /home/app app
