@@ -9,8 +9,9 @@
     "remoteUser": "developer",
     // VS Code extensions to install automatically
     "extensions": [
-        "golang.go",                         // Go language support
-        "ms-azuretools.vscode-docker",        // Docker integration
+        "golang.go",
+        "ms-azuretools.vscode-docker",
+        "github.vscode-github-actions"
     ],
     "settings": {
         "go.useLanguageServer": true,          // Enable the Go language server
