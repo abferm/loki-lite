@@ -9,12 +9,13 @@ Query-only Loki-compatible API backed by journald. Translates [Loki API requests
 | Endpoint | Method | Description |
 |---|---|---|
 | `/loki/api/v1/query_range` | GET | Range queries over log streams |
-| `/loki/api/v1/query` | GET | Instant metric queries (vector) |
+| `/loki/api/v1/query` | GET | Instant queries (vector for metrics, streams for logs) |
 | `/loki/api/v1/labels` | GET | List known labels |
 | `/loki/api/v1/label/<name>/values` | GET | List values for a label |
 | `/loki/api/v1/series` | GET | List matching label sets |
 | `/loki/api/v1/index/stats` | GET | Approximate stream/chunk/entry/byte counts |
 | `/loki/api/v1/format_query` | GET | Format and validate a LogQL query |
+| `/loki/api/v1/tail` | GET | WebSocket streaming of log entries (with catch-up from start) |
 | `/ready` | GET | Readiness probe (always 200) |
 
 ### Not implemented
@@ -25,7 +26,6 @@ These endpoints are out of scope for a query-only journald bridge:
 |---|---|
 | `POST /loki/api/v1/push` | Query-only; no storage or ingestion |
 | `POST /otlp/v1/logs` | Query-only; no storage or ingestion |
-| `/loki/api/v1/tail` | WebSocket streaming; may be added later |
 | `/loki/api/v1/patterns` | Requires pattern ingester; not applicable |
 | `/loki/api/v1/index/volume` | Requires index volume tracking |
 | `/loki/api/v1/index/volume_range` | Requires index volume tracking |
@@ -115,10 +115,12 @@ Each incoming Loki query is translated to journald operations as follows:
 
 ### Label queries
 
-- `GET /loki/api/v1/labels` returns all configured label names from the schema
-- `GET /loki/api/v1/label/<name>/values` returns all distinct values for the named label
+- `GET /loki/api/v1/labels` returns all label names present in the journal files, excluding those in the schema's exclude list
+- `GET /loki/api/v1/label/<name>/values` returns all distinct values for the named label (capped at 10000 values)
 
 **Note:** The `start` and `end` time range parameters on the labels and label values endpoints are accepted for API compatibility but ignored. Results reflect all labels and values present in the available journal files, not just those within the requested time range.
+
+**Note:** The `match` parameter on `/loki/api/v1/index/stats` is accepted but currently ignored — counts cover all streams in the time range. Per-stream filtering is planned.
 
 ### Response format
 

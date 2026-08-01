@@ -25,6 +25,10 @@ docker compose -f demo/compose.yaml up -d --build
 
 Then open http://localhost:3000 (Grafana) and query Loki Lite in Explore, or talk to http://localhost:3100 directly with logcli or curl.
 
+## API documentation
+
+See [API.md](API.md) for the supported Loki API endpoints and request/response details.
+
 ## Quick start
 
 ```bash
