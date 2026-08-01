@@ -1,5 +1,9 @@
 # loki-lite
 
+[![GoDoc](https://pkg.go.dev/badge/github.com/abferm/loki-lite)](https://pkg.go.dev/github.com/abferm/loki-lite)
+[![Docker Hub](https://img.shields.io/docker/pulls/abferm/loki-lite?label=Docker%20Hub)](https://hub.docker.com/r/abferm/loki-lite)
+[![CI](https://github.com/abferm/loki-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/abferm/loki-lite/actions/workflows/ci.yml)
+
 A Loki-compatible query interface for journald logs. Query-only with no storage of its own — it translates Loki API requests into journald queries.
 
 ## Requirements
